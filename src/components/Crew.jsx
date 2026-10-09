@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { call } from '../api.js';
 import { POSITIONS, POSITION_HELP } from '../util.js';
 
@@ -8,6 +8,12 @@ export default function Crew({ user, crew, onChanged }) {
   const [pw, setPw] = useState({ oldPassword: '', newPassword: '' });
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
+
+  const [server, setServer] = useState('');
+  useEffect(() => {
+    call('version').then((r) => setServer(r.version))
+      .catch(() => setServer('OUT OF DATE. Deploy a new version in Apps Script.'));
+  }, []);
 
   async function run(fn, done) {
     setError(''); setMsg('');
@@ -111,6 +117,7 @@ export default function Crew({ user, crew, onChanged }) {
           <div className="actions left"><button className="btn primary">Change password</button></div>
         </form>
       </section>
+      <p className="hint">Google Script version: {server || 'checking…'}</p>
     </div>
   );
 }

@@ -10,7 +10,7 @@
  */
 
 // ───────────────────────── CONFIG ─────────────────────────
-const SCRIPT_VERSION = '1.4 (positions, remove crew)';
+const SCRIPT_VERSION = '1.5 (positions, remove crew, password reset)';
 const CONFIG = {
   APP_NAME: 'Karyatis',
   APP_URL: '',                 // Netlify URL, used as a link in reminder emails
@@ -130,6 +130,9 @@ function doPost(e) {
 
   try {
     if (req.action === 'login') return json(withLock(() => login(req.email, req.password)));
+    if (req.action === 'version') return json({ ok: true, version: SCRIPT_VERSION });
+    if (req.action === 'requestReset') return json(requestReset(req.email));
+    if (req.action === 'confirmReset') return json(withLock(() => confirmReset(req.email, req.code, req.newPassword)));
 
     const user = auth(req.token);
     const handlers = {
@@ -204,6 +207,52 @@ function purgeExpiredSessions() {
     .sort((a, b) => b._row - a._row) // delete bottom-up so row numbers stay valid
     .forEach(s => sheet('Sessions').deleteRow(s._row));
   delete TABLE_CACHE.Sessions;
+}
+
+// ───────────────────────── FORGOT PASSWORD ─────────────────────────
+// Emails a 6-digit code that is valid for 15 minutes. Never reveals whether an email exists.
+function requestReset(email) {
+  email = String(email || '').toLowerCase().trim();
+  const generic = { ok: true, message: 'If that email is on the crew list, a reset code is on its way.' };
+  if (!email) return generic;
+  const cache = CacheService.getScriptCache();
+  const tries = Number(cache.get('rr_' + email) || 0);
+  if (tries >= 3) return { ok: false, error: 'Too many reset requests. Try again in 15 minutes.' };
+  cache.put('rr_' + email, String(tries + 1), 900);
+
+  const crew = readTable('Crew').find(c => c.email.toLowerCase() === email && isTrue(c.active));
+  if (!crew) return generic;
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  cache.put('rc_' + email, JSON.stringify({ hash: hash(code, crew.salt), attempts: 0 }), 900);
+  MailApp.sendEmail({
+    to: crew.email,
+    subject: CONFIG.APP_NAME + ' password reset code',
+    htmlBody: '<p style="font-family:sans-serif">Your ' + CONFIG.APP_NAME + ' reset code is:</p>' +
+      '<p style="font-family:sans-serif;font-size:28px;font-weight:bold;letter-spacing:4px">' + code + '</p>' +
+      '<p style="font-family:sans-serif;color:#666">It expires in 15 minutes. If you did not ask for this, ignore this email.</p>'
+  });
+  return generic;
+}
+
+function confirmReset(email, code, newPassword) {
+  email = String(email || '').toLowerCase().trim();
+  if (!newPassword || newPassword.length < 6) throw new Error('Password must be at least 6 characters');
+  const cache = CacheService.getScriptCache();
+  const raw = cache.get('rc_' + email);
+  const crew = readTable('Crew').find(c => c.email.toLowerCase() === email && isTrue(c.active));
+  if (!raw || !crew) throw new Error('Code expired or not valid. Request a new one.');
+  const rec = JSON.parse(raw);
+  if (rec.hash !== hash(String(code || '').trim(), crew.salt)) {
+    rec.attempts++;
+    if (rec.attempts >= 5) cache.remove('rc_' + email); else cache.put('rc_' + email, JSON.stringify(rec), 900);
+    throw new Error('That code is not right.');
+  }
+  cache.remove('rc_' + email);
+  crew.salt = Utilities.getUuid();
+  crew.passwordHash = hash(newPassword, crew.salt);
+  update('Crew', crew._row, crew);
+  audit(crew.id, 'resetPasswordByEmail', '', '');
+  return login(email, newPassword);
 }
 
 function requireAdmin(user) {
