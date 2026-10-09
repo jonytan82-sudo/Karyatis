@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { call, setToken } from '../api.js';
 
 export default function Login({ onLogin }) {
@@ -6,6 +6,13 @@ export default function Login({ onLogin }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [slow, setSlow] = useState(false);
+
+  useEffect(() => {
+    if (!busy) { setSlow(false); return undefined; }
+    const t = setTimeout(() => setSlow(true), 4000);
+    return () => clearTimeout(t);
+  }, [busy]);
 
   async function submit(e) {
     e.preventDefault();
@@ -14,7 +21,7 @@ export default function Login({ onLogin }) {
     try {
       const r = await call('login', { email, password });
       setToken(r.token);
-      onLogin(r.user);
+      onLogin(r);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -36,6 +43,7 @@ export default function Login({ onLogin }) {
           </label>
           {error && <div className="alert">{error}</div>}
           <button className="btn primary full" disabled={busy}>{busy ? 'Logging in…' : 'Log in'}</button>
+          {slow && <p className="hint">Still connecting. The first login after a quiet spell can take up to 15 seconds.</p>}
         </form>
         <p className="hint">Need an account? Ask the captain or an admin to add you.</p>
       </div>

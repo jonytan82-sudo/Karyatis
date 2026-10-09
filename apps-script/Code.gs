@@ -134,6 +134,7 @@ function doPost(e) {
     const handlers = {
       logout:         () => withLock(() => logout(req.token)),
       me:             () => ({ ok: true, user: publicUser(user) }),
+      bootstrap:      () => ({ ok: true, user: publicUser(user), tasks: listTasks(user, req).tasks, crew: listCrew().crew }),
       listTasks:      () => listTasks(user, req),
       calendar:       () => calendar(req.from, req.to),
       getTask:        () => getTask(user, req.id),
@@ -163,17 +164,24 @@ function login(email, password) {
   if (!crew || hash(password || '', crew.salt) !== crew.passwordHash) {
     return { ok: false, error: 'Invalid email or password' };
   }
-  purgeExpiredSessions();
   const token = Utilities.getUuid() + Utilities.getUuid();
   const expires = new Date(Date.now() + CONFIG.SESSION_DAYS * 86400000).toISOString();
   insert('Sessions', { token, crewId: crew.id, expiresAt: expires });
-  audit(crew.id, 'login', '', '');
-  return { ok: true, token, user: publicUser(crew) };
+  CacheService.getScriptCache().put('s_' + token, JSON.stringify({ crewId: crew.id, expiresAt: expires }), 21600);
+  return { ok: true, token, user: publicUser(crew),
+           tasks: listTasks(crew, {}).tasks, crew: listCrew().crew };
 }
 
 function auth(token) {
   if (!token) throw new Error('Not logged in');
-  const s = readTable('Sessions').find(x => x.token === token);
+  const cache = CacheService.getScriptCache();
+  let s = null;
+  const hit = cache.get('s_' + token);
+  if (hit) s = JSON.parse(hit);
+  else {
+    s = readTable('Sessions').find(x => x.token === token);
+    if (s) cache.put('s_' + token, JSON.stringify({ crewId: s.crewId, expiresAt: s.expiresAt }), 21600);
+  }
   if (!s || new Date(s.expiresAt) < new Date()) throw new Error('Session expired');
   const crew = readTable('Crew').find(c => c.id === s.crewId && isTrue(c.active));
   if (!crew) throw new Error('Account inactive');
@@ -182,7 +190,8 @@ function auth(token) {
 
 function logout(token) {
   const s = readTable('Sessions').find(x => x.token === token);
-  if (s) sheet('Sessions').deleteRow(s._row);
+  CacheService.getScriptCache().remove('s_' + token);
+  if (s) { delete TABLE_CACHE.Sessions; sheet('Sessions').deleteRow(s._row); }
   return { ok: true };
 }
 
@@ -192,6 +201,7 @@ function purgeExpiredSessions() {
     .filter(s => new Date(s.expiresAt) < now)
     .sort((a, b) => b._row - a._row) // delete bottom-up so row numbers stay valid
     .forEach(s => sheet('Sessions').deleteRow(s._row));
+  delete TABLE_CACHE.Sessions;
 }
 
 function requireAdmin(user) {
@@ -475,6 +485,7 @@ function decorate(t, names, user) {
 // ───────────────────────── REMINDERS ─────────────────────────
 /** Runs daily from the trigger. One digest email to all active crew. */
 function dailyReminders() {
+  try { withLock(purgeExpiredSessions); } catch (e) {}
   const t = today();
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -542,7 +553,16 @@ function sheet(name) {
   return sh;
 }
 
+const TABLE_CACHE = {}; // lives for one request only
+
 function readTable(name) {
+  if (TABLE_CACHE[name]) return TABLE_CACHE[name].map(o => Object.assign({}, o));
+  const rows = readTableRaw(name);
+  TABLE_CACHE[name] = rows;
+  return rows.map(o => Object.assign({}, o));
+}
+
+function readTableRaw(name) {
   const values = sheet(name).getDataRange().getValues();
   const headers = values.shift() || [];
   return values.filter(r => r.some(v => v !== '')).map((r, i) => {
@@ -556,10 +576,12 @@ function readTable(name) {
 }
 
 function insert(name, obj) {
+  delete TABLE_CACHE[name];
   sheet(name).appendRow(SHEETS[name].map(h => obj[h] === undefined || obj[h] === null ? '' : String(obj[h])));
 }
 
 function update(name, row, obj) {
+  delete TABLE_CACHE[name];
   sheet(name).getRange(row, 1, 1, SHEETS[name].length)
     .setValues([SHEETS[name].map(h => obj[h] === undefined || obj[h] === null ? '' : String(obj[h]))]);
 }

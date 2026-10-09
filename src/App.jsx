@@ -26,25 +26,26 @@ export default function App() {
   const [editing, setEditing] = useState(null); // null | 'new' | task
   const [error, setError] = useState('');
 
-  const refresh = useCallback(async () => {
-    try {
-      const [t, c] = await Promise.all([call('listTasks'), call('listCrew')]);
-      setTasks(t.tasks);
-      setCrew(c.crew);
-      setVersion((v) => v + 1);
-      setError('');
-    } catch (e) {
-      setError(e.message);
-    }
+  const load = useCallback((r) => {
+    setUser(r.user);
+    setTasks(r.tasks);
+    setCrew(r.crew);
+    setVersion((v) => v + 1);
+    setError('');
   }, []);
+
+  const refresh = useCallback(async () => {
+    try { load(await call('bootstrap')); }
+    catch (e) { setError(e.message); }
+  }, [load]);
 
   useEffect(() => {
     if (!getToken()) return;
-    call('me')
-      .then((r) => setUser(r.user))
+    call('bootstrap')
+      .then(load)
       .catch(() => {})
       .finally(() => setChecking(false));
-  }, []);
+  }, [load]);
 
   useEffect(() => {
     const onLogout = () => setUser(null);
@@ -52,18 +53,14 @@ export default function App() {
     return () => window.removeEventListener('karyatis-logout', onLogout);
   }, []);
 
-  useEffect(() => {
-    if (user) refresh();
-  }, [user, refresh]);
-
   async function logout() {
     try { await call('logout'); } catch { /* already gone */ }
     setToken(null);
     setUser(null);
   }
 
-  if (checking) return <div className="splash">Karyatis</div>;
-  if (!user) return <Login onLogin={(u) => setUser(u)} />;
+  if (checking) return <div className="splash"><span>Karyatis</span><small>Loading the log…</small></div>;
+  if (!user) return <Login onLogin={load} />;
 
   return (
     <div className="app">
