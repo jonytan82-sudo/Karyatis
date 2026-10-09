@@ -4,6 +4,17 @@ export const SYSTEMS = [
   'Tender & toys', 'Galley', 'Interior', 'Other',
 ];
 
+export const POSITIONS = ['Captain', 'Chief Engineer', 'Engineer', 'Bosun', 'Interior', 'Deckhand'];
+
+export const POSITION_HELP = {
+  'Captain': 'Full control, manages crew and positions',
+  'Chief Engineer': 'Creates, edits, assigns and signs off any task',
+  'Engineer': 'Schedules tasks, signs off engine-room systems',
+  'Bosun': 'Schedules tasks, signs off deck, tender and safety',
+  'Interior': 'Reports issues, signs off galley and interior',
+  'Deckhand': 'Reports issues, signs off tasks assigned to them',
+};
+
 export const STATUS = {
   red: 'Overdue',
   amber: 'Due soon',

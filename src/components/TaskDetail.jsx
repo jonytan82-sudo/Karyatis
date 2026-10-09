@@ -67,11 +67,19 @@ export default function TaskDetail({ id, onClose, onChanged, onEdit }) {
 
       {error && <div className="alert">{error}</div>}
 
-      {open && !signing && (
+      {open && !signing && (t.canSignOff || t.canEdit) && (
         <div className="actions left">
-          <button className="btn primary" onClick={() => setSigning(true)}>{isIssue ? 'Close issue' : 'Sign off'}</button>
-          <button className="btn" onClick={() => onEdit(t)}>Edit</button>
+          {t.canSignOff && <button className="btn primary" onClick={() => setSigning(true)}>{isIssue ? 'Close issue' : 'Sign off'}</button>}
+          {t.canEdit && <button className="btn" onClick={() => onEdit(t)}>Edit</button>}
         </div>
+      )}
+      {open && !t.canSignOff && (
+        <p className="hint perm">
+          {t.department === 'engine' ? 'Signed off by the engineering department'
+            : t.department === 'deck' ? 'Signed off by the deck department'
+            : t.department === 'interior' ? 'Signed off by the interior department'
+            : 'Signed off by an officer'} or the assigned crew member. You can still add notes.
+        </p>
       )}
 
       {open && signing && (

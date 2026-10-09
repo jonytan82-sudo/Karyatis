@@ -73,7 +73,7 @@ export default function App() {
           <span className="vessel-sub">Maintenance log</span>
         </div>
         <div className="who">
-          <span>{user.name}</span>
+          <span>{user.name}, {user.position}</span>
           <button className="link light" onClick={logout}>Log out</button>
         </div>
       </header>
@@ -84,7 +84,9 @@ export default function App() {
             {label}
           </button>
         ))}
-        <button className="btn primary new-task" onClick={() => setEditing('new')}>New task</button>
+        <button className="btn primary new-task" onClick={() => setEditing('new')}>
+          {user.perms.createRoutine ? 'New task' : 'Report issue'}
+        </button>
       </nav>
 
       <main className="main">
@@ -107,6 +109,7 @@ export default function App() {
         <TaskForm
           initial={editing === 'new' ? null : editing}
           crew={crew}
+          user={user}
           onClose={() => setEditing(null)}
           onSaved={(t) => { setEditing(null); refresh(); setOpenId(t.id); }}
         />

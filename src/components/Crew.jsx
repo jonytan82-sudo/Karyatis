@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { call } from '../api.js';
+import { POSITIONS, POSITION_HELP } from '../util.js';
 
 export default function Crew({ user, crew, onChanged }) {
-  const isAdmin = user.role === 'admin';
-  const [form, setForm] = useState({ name: '', email: '', password: '', role: 'crew' });
+  const isAdmin = user.perms.manageCrew;
+  const [form, setForm] = useState({ name: '', email: '', password: '', position: 'Deckhand' });
   const [pw, setPw] = useState({ oldPassword: '', newPassword: '' });
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
@@ -18,7 +19,7 @@ export default function Crew({ user, crew, onChanged }) {
     e.preventDefault();
     run(async () => {
       await call('addCrew', { crew: form });
-      setForm({ name: '', email: '', password: '', role: 'crew' });
+      setForm({ name: '', email: '', password: '', position: 'Deckhand' });
     }, `${form.name} added. Send them their email and temporary password.`);
   };
 
@@ -43,11 +44,16 @@ export default function Crew({ user, crew, onChanged }) {
           {crew.map((c) => (
             <li key={c.id} className={c.active ? '' : 'inactive'}>
               <span>
-                <b>{c.name}</b>{c.role === 'admin' && <span className="tag">Admin</span>}
-                <small>{c.email}{!c.active && ', inactive'}</small>
+                <b>{c.name}</b>
+                <small>{c.position}, {c.email}{!c.active && ', inactive'}</small>
               </span>
               {isAdmin && c.id !== user.id && (
                 <span className="crew-actions">
+                  <select value={c.position} aria-label={`Position for ${c.name}`}
+                    onChange={(e) => run(() => call('setPosition', { id: c.id, position: e.target.value }),
+                      `${c.name} is now ${e.target.value}.`)}>
+                    {POSITIONS.map((p) => <option key={p}>{p}</option>)}
+                  </select>
                   <button className="link" onClick={() => reset(c)}>Reset password</button>
                   <button className="link" onClick={() => run(() => call('setCrewActive', { id: c.id, active: !c.active }),
                     `${c.name} ${c.active ? 'deactivated' : 'reactivated'}.`)}>
@@ -60,6 +66,14 @@ export default function Crew({ user, crew, onChanged }) {
         </ul>
       </section>
 
+      <section className="group">
+        <h3>What each position can do</h3>
+        <dl className="positions">
+          {POSITIONS.map((p) => <div key={p}><dt>{p}</dt><dd>{POSITION_HELP[p]}</dd></div>)}
+        </dl>
+        <p className="hint">Everyone can see all tasks, report issues, add notes, and sign off tasks assigned to them.</p>
+      </section>
+
       {isAdmin && (
         <section className="group">
           <h3>Add crew member</h3>
@@ -70,13 +84,13 @@ export default function Crew({ user, crew, onChanged }) {
             </div>
             <div className="two">
               <label>Temporary password<input value={form.password} minLength={6} onChange={(e) => setForm({ ...form, password: e.target.value })} required /></label>
-              <label>Role
-                <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
-                  <option value="crew">Crew</option>
-                  <option value="admin">Admin</option>
+              <label>Position
+                <select value={form.position} onChange={(e) => setForm({ ...form, position: e.target.value })}>
+                  {POSITIONS.map((p) => <option key={p}>{p}</option>)}
                 </select>
               </label>
             </div>
+            <p className="hint">{POSITION_HELP[form.position]}</p>
             <div className="actions left"><button className="btn primary">Add crew member</button></div>
           </form>
         </section>

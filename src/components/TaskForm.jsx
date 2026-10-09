@@ -8,9 +8,12 @@ const BLANK = {
   recurring: false, intervalValue: '', intervalUnit: 'months', assignedTo: '', note: '',
 };
 
-export default function TaskForm({ initial, crew, onClose, onSaved }) {
+export default function TaskForm({ initial, crew, user, onClose, onSaved }) {
   const editing = !!initial;
-  const [f, setF] = useState(() => (initial ? { ...BLANK, ...initial, intervalUnit: initial.intervalUnit || 'months' } : BLANK));
+  const canSchedule = user.perms.createRoutine;
+  const [f, setF] = useState(() => (initial
+    ? { ...BLANK, ...initial, intervalUnit: initial.intervalUnit || 'months' }
+    : { ...BLANK, type: canSchedule ? 'Routine' : 'Issue' }));
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
@@ -23,7 +26,8 @@ export default function TaskForm({ initial, crew, onClose, onSaved }) {
     try {
       const task = {
         title: f.title.trim(), system: f.system, description: f.description, dueDate: f.dueDate,
-        dueTime: f.dueTime, assignedTo: f.assignedTo,
+        dueTime: f.dueTime,
+        ...(canSchedule ? { assignedTo: f.assignedTo } : {}),
         recurring: !isIssue && f.recurring,
         intervalValue: f.intervalValue, intervalUnit: f.intervalUnit,
       };
@@ -39,9 +43,9 @@ export default function TaskForm({ initial, crew, onClose, onSaved }) {
   }
 
   return (
-    <Modal title={editing ? 'Edit task' : 'New task'} onClose={onClose}>
+    <Modal title={editing ? 'Edit task' : canSchedule ? 'New task' : 'Report an issue'} onClose={onClose}>
       <form className="form" onSubmit={save}>
-        {!editing && (
+        {!editing && canSchedule && (
           <div className="segmented" role="radiogroup" aria-label="Task type">
             <button type="button" className={!isIssue ? 'on' : ''} onClick={() => setF({ ...f, type: 'Routine' })}>
               Routine maintenance
@@ -64,12 +68,14 @@ export default function TaskForm({ initial, crew, onClose, onSaved }) {
               {SYSTEMS.map((s) => <option key={s}>{s}</option>)}
             </select>
           </label>
-          <label>Assigned to
-            <select value={f.assignedTo} onChange={set('assignedTo')}>
-              <option value="">Anyone</option>
-              {crew.filter((c) => c.active).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </label>
+          {canSchedule && (
+            <label>Assigned to
+              <select value={f.assignedTo} onChange={set('assignedTo')}>
+                <option value="">Anyone</option>
+                {crew.filter((c) => c.active).map((c) => <option key={c.id} value={c.id}>{c.name} ({c.position})</option>)}
+              </select>
+            </label>
+          )}
         </div>
 
         <label>Description

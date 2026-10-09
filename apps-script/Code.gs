@@ -33,6 +33,54 @@ const SHEETS = {
   Audit:       ['timestamp', 'crewId', 'action', 'taskId', 'details']
 };
 
+// ───────────────────────── POSITIONS ─────────────────────────
+// Crew.role stores the position. Old values 'admin'/'crew' map to Captain/Deckhand.
+const DEPARTMENTS = {
+  'Main engines': 'engine', 'Generators': 'engine', 'Electrical': 'engine', 'Fuel': 'engine',
+  'Plumbing & water': 'engine', 'HVAC': 'engine', 'Steering & stabilizers': 'engine',
+  'Navigation & electronics': 'engine',
+  'Hull & deck': 'deck', 'Tender & toys': 'deck', 'Safety equipment': 'deck',
+  'Galley': 'interior', 'Interior': 'interior',
+  'Other': 'any', '': 'any'
+};
+
+// manageCrew: add crew, set positions, reset passwords
+// createRoutine: create scheduled maintenance tasks and assign crew
+// editAll: edit any task (otherwise: tasks in own departments or that they created)
+// depts: departments they can sign off / close issues in ('all' = everything)
+// Everyone can view everything, report issues, add notes, and sign off tasks assigned to them.
+const POSITIONS = {
+  'Captain':        { manageCrew: true,  createRoutine: true,  editAll: true,  depts: 'all' },
+  'Chief Engineer': { manageCrew: false, createRoutine: true,  editAll: true,  depts: 'all' },
+  'Engineer':       { manageCrew: false, createRoutine: true,  editAll: false, depts: ['engine'] },
+  'Bosun':          { manageCrew: false, createRoutine: true,  editAll: false, depts: ['deck'] },
+  'Interior':       { manageCrew: false, createRoutine: false, editAll: false, depts: ['interior'] },
+  'Deckhand':       { manageCrew: false, createRoutine: false, editAll: false, depts: [] }
+};
+
+function positionOf(c) {
+  if (POSITIONS[c.role]) return c.role;
+  return c.role === 'admin' ? 'Captain' : 'Deckhand';
+}
+
+function perms(user) { return POSITIONS[positionOf(user)]; }
+
+function inMyDept(user, task) {
+  const p = perms(user), d = DEPARTMENTS[task.system] || 'any';
+  if (p.depts === 'all') return true;
+  if (d === 'any') return p.depts.length > 0;
+  return p.depts.indexOf(d) !== -1;
+}
+
+function canSignOff(user, task) {
+  return task.state === 'Open' && (task.assignedTo === user.id || inMyDept(user, task));
+}
+
+function canEdit(user, task) {
+  const p = perms(user);
+  return p.editAll || task.createdBy === user.id || (p.createRoutine && inMyDept(user, task));
+}
+
 // Task.type:  'Routine' (scheduled maintenance) | 'Issue' (ongoing problem)
 // Task.state: 'Open' | 'Completed' (one-off done) | 'Resolved' (issue closed)
 // intervalUnit: 'days' | 'weeks' | 'months' | 'years'
@@ -57,7 +105,7 @@ function createFirstAdmin() {
   }
   const salt = Utilities.getUuid();
   insert('Crew', {
-    id: newId('C'), name: NAME, email: EMAIL.toLowerCase(), role: 'admin',
+    id: newId('C'), name: NAME, email: EMAIL.toLowerCase(), role: 'Captain',
     passwordHash: hash(PASSWORD, salt), salt, active: 'TRUE', createdAt: nowIso()
   });
 }
@@ -86,9 +134,9 @@ function doPost(e) {
     const handlers = {
       logout:         () => withLock(() => logout(req.token)),
       me:             () => ({ ok: true, user: publicUser(user) }),
-      listTasks:      () => listTasks(req),
+      listTasks:      () => listTasks(user, req),
       calendar:       () => calendar(req.from, req.to),
-      getTask:        () => getTask(req.id),
+      getTask:        () => getTask(user, req.id),
       createTask:     () => withLock(() => createTask(user, req.task || {})),
       updateTask:     () => withLock(() => updateTask(user, req.id, req.task || {})),
       completeTask:   () => withLock(() => completeTask(user, req)),
@@ -96,6 +144,7 @@ function doPost(e) {
       listCrew:       () => listCrew(),
       changePassword: () => withLock(() => changePassword(user, req.oldPassword, req.newPassword)),
       addCrew:        () => { requireAdmin(user); return withLock(() => addCrew(user, req.crew || {})); },
+      setPosition:    () => { requireAdmin(user); return withLock(() => setPosition(user, req.id, req.position)); },
       setCrewActive:  () => { requireAdmin(user); return withLock(() => setCrewActive(user, req.id, req.active)); },
       resetPassword:  () => { requireAdmin(user); return withLock(() => resetPassword(user, req.id, req.newPassword)); }
     };
@@ -146,7 +195,7 @@ function purgeExpiredSessions() {
 }
 
 function requireAdmin(user) {
-  if (user.role !== 'admin') throw new Error('Admin only');
+  if (!perms(user).manageCrew) throw new Error('Only the Captain can manage crew');
 }
 
 function hash(password, salt) {
@@ -169,7 +218,7 @@ function addCrew(user, c) {
   if (readTable('Crew').some(x => x.email.toLowerCase() === email)) throw new Error('Email already exists');
   const salt = Utilities.getUuid();
   const crew = {
-    id: newId('C'), name: c.name, email, role: c.role === 'admin' ? 'admin' : 'crew',
+    id: newId('C'), name: c.name, email, role: POSITIONS[c.position] ? c.position : 'Deckhand',
     passwordHash: hash(c.password, salt), salt, active: 'TRUE', createdAt: nowIso()
   };
   insert('Crew', crew);
@@ -177,9 +226,26 @@ function addCrew(user, c) {
   return { ok: true, crew: publicUser(crew) };
 }
 
+function setPosition(user, id, position) {
+  if (!POSITIONS[position]) throw new Error('Unknown position');
+  const all = readTable('Crew');
+  const c = all.find(x => x.id === id);
+  if (!c) throw new Error('Crew member not found');
+  if (positionOf(c) === 'Captain' && position !== 'Captain' &&
+      all.filter(x => isTrue(x.active) && positionOf(x) === 'Captain').length < 2) {
+    throw new Error('There must be at least one Captain');
+  }
+  const old = positionOf(c);
+  c.role = position;
+  update('Crew', c._row, c);
+  audit(user.id, 'setPosition', '', c.name + ': ' + old + ' → ' + position);
+  return { ok: true };
+}
+
 function setCrewActive(user, id, active) {
   const c = readTable('Crew').find(x => x.id === id);
   if (!c) throw new Error('Crew member not found');
+  if (!active && c.id === user.id) throw new Error('You cannot deactivate yourself');
   c.active = active ? 'TRUE' : 'FALSE';
   update('Crew', c._row, c);
   audit(user.id, active ? 'activateCrew' : 'deactivateCrew', '', c.name);
@@ -208,13 +274,15 @@ function changePassword(user, oldPassword, newPassword) {
 }
 
 function publicUser(c) {
-  return { id: c.id, name: c.name, email: c.email, role: c.role, active: isTrue(c.active) };
+  const position = positionOf(c), p = POSITIONS[position];
+  return { id: c.id, name: c.name, email: c.email, position, active: isTrue(c.active),
+           perms: { manageCrew: p.manageCrew, createRoutine: p.createRoutine, editAll: p.editAll } };
 }
 
 // ───────────────────────── TASKS ─────────────────────────
-function listTasks(req) {
+function listTasks(user, req) {
   const names = crewNames();
-  let tasks = readTable('Tasks').map(t => decorate(t, names));
+  let tasks = readTable('Tasks').map(t => decorate(t, names, user));
   if (req.state)      tasks = tasks.filter(t => t.state === req.state);
   if (req.type)       tasks = tasks.filter(t => t.type === req.type);
   if (req.color)      tasks = tasks.filter(t => t.color === req.color);
@@ -223,7 +291,7 @@ function listTasks(req) {
   return { ok: true, today: today(), tasks };
 }
 
-function getTask(id) {
+function getTask(user, id) {
   const names = crewNames();
   const t = readTable('Tasks').find(x => x.id === id);
   if (!t) throw new Error('Task not found');
@@ -234,12 +302,15 @@ function getTask(id) {
                  notes: c.notes, by: names[c.performedBy] || c.performedBy, loggedAt: c.loggedAt }));
   const history = readTable('Audit').filter(a => a.taskId === id)
     .map(a => ({ timestamp: a.timestamp, action: a.action, details: a.details, by: names[a.crewId] || a.crewId }));
-  return { ok: true, task: decorate(t, names), notes, completions, history };
+  return { ok: true, task: decorate(t, names, user), notes, completions, history };
 }
 
 function createTask(user, t) {
   if (!t.title) throw new Error('Title required');
   const type = t.type === 'Issue' ? 'Issue' : 'Routine';
+  const p = perms(user);
+  if (type === 'Routine' && !p.createRoutine) throw new Error('Your position can report issues but not schedule maintenance');
+  if (t.assignedTo && !p.createRoutine) t.assignedTo = '';
   const recurring = !!t.recurring && type === 'Routine';
   if (type === 'Routine' && !t.dueDate) throw new Error('Due date required');
   if (recurring) validateInterval(t.intervalValue, t.intervalUnit);
@@ -256,12 +327,17 @@ function createTask(user, t) {
   insert('Tasks', task);
   audit(user.id, 'create', task.id, type + ': ' + task.title);
   if (t.note) addNote(user, task.id, t.note);
-  return { ok: true, task: decorate(task, crewNames()) };
+  return { ok: true, task: decorate(task, crewNames(), user) };
 }
 
 function updateTask(user, id, changes) {
   const t = readTable('Tasks').find(x => x.id === id);
   if (!t) throw new Error('Task not found');
+  if (!canEdit(user, t)) throw new Error('Your position cannot edit this task');
+  if (changes.assignedTo !== undefined && changes.assignedTo !== t.assignedTo && !perms(user).createRoutine) {
+    throw new Error('Your position cannot assign tasks');
+  }
+  if (t.type === 'Issue') delete changes.recurring;
   const editable = ['title', 'description', 'system', 'dueDate', 'dueTime', 'recurring',
                     'intervalValue', 'intervalUnit', 'assignedTo'];
   const changed = [];
@@ -270,13 +346,13 @@ function updateTask(user, id, changes) {
     let v = k === 'recurring' ? (changes[k] ? 'TRUE' : 'FALSE') : String(changes[k]);
     if (String(t[k]) !== v) { changed.push(k + ': ' + t[k] + ' → ' + v); t[k] = v; }
   });
-  if (!changed.length) return { ok: true, task: decorate(t, crewNames()) };
+  if (!changed.length) return { ok: true, task: decorate(t, crewNames(), user) };
   if (t.dueDate) validateDate(t.dueDate);
   if (isTrue(t.recurring)) validateInterval(t.intervalValue, t.intervalUnit);
   if (changed.some(c => c.indexOf('dueDate') === 0)) t.reminderLog = '';
   update('Tasks', t._row, t);
   audit(user.id, 'update', id, changed.join('; '));
-  return { ok: true, task: decorate(t, crewNames()) };
+  return { ok: true, task: decorate(t, crewNames(), user) };
 }
 
 /**
@@ -287,6 +363,10 @@ function completeTask(user, req) {
   const t = readTable('Tasks').find(x => x.id === req.id);
   if (!t) throw new Error('Task not found');
   if (t.state !== 'Open') throw new Error('Task is already ' + t.state.toLowerCase());
+  if (!canSignOff(user, t)) {
+    const label = { engine: 'engineering', deck: 'deck', interior: 'interior' }[DEPARTMENTS[t.system]];
+    throw new Error('Only the assigned crew member' + (label ? ' or the ' + label + ' department' : ' or an officer') + ' can sign this off');
+  }
   const performed = req.performedDate || today();
   validateDate(performed);
   if (performed > today()) throw new Error('Performed date cannot be in the future');
@@ -324,7 +404,7 @@ function completeTask(user, req) {
   update('Tasks', t._row, t);
   audit(user.id, 'complete', t.id, detail);
   if (req.notes) addNote(user, t.id, req.notes);
-  return { ok: true, task: decorate(t, crewNames()) };
+  return { ok: true, task: decorate(t, crewNames(), user) };
 }
 
 function addNote(user, taskId, text) {
@@ -378,7 +458,7 @@ function colorFor(t) {
   return 'green';
 }
 
-function decorate(t, names) {
+function decorate(t, names, user) {
   const out = {};
   SHEETS.Tasks.forEach(k => { if (k !== 'reminderLog') out[k] = t[k]; });
   out.recurring = isTrue(t.recurring);
@@ -387,6 +467,8 @@ function decorate(t, names) {
   out.createdByName = names[t.createdBy] || '';
   out.assignedToName = names[t.assignedTo] || '';
   out.lastPerformedByName = names[t.lastPerformedBy] || '';
+  out.department = DEPARTMENTS[t.system] || 'any';
+  if (user) { out.canSignOff = canSignOff(user, t); out.canEdit = canEdit(user, t); }
   return out;
 }
 

@@ -363,3 +363,14 @@ h3 { font-size: 1.25rem; }
   }
   .main { padding-bottom: 6rem; }
 }
+
+/* ── Positions ── */
+.crew-actions { align-items: center; flex-wrap: wrap; }
+.crew-actions select { border: 1px solid var(--line); border-radius: 6px; padding: 0.3rem 0.5rem; background: var(--paper); }
+.positions { background: var(--paper); border: 1px solid var(--line); margin: 0 0 0.6rem; }
+.positions div { display: grid; grid-template-columns: 9.5rem 1fr; gap: 1rem; padding: 0.55rem 1rem; }
+.positions div + div { border-top: 1px solid var(--line); }
+.positions dt { font-weight: 600; }
+.positions dd { margin: 0; color: var(--muted); }
+@media (max-width: 480px) { .positions div { grid-template-columns: 1fr; gap: 0.1rem; } }
+.hint.perm { margin: 1rem 0; }

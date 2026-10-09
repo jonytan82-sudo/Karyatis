@@ -23,3 +23,8 @@ npm run dev
 4. Put the Netlify URL in `CONFIG.APP_URL` in Code.gs so reminder emails link to the app.
 
 When you change Code.gs, use Deploy → Manage deployments → Edit → New version so the URL stays the same.
+
+## Positions
+Captain, Chief Engineer, Engineer, Bosun, Interior, Deckhand. The Captain sets each person's position on the Crew tab.
+Rules live in `POSITIONS` and `DEPARTMENTS` at the top of `apps-script/Code.gs`.
+Accounts created before positions existed: admin counts as Captain, crew as Deckhand.
