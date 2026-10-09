@@ -15,6 +15,19 @@ const TABS = [
   ['crew', 'Crew'],
 ];
 
+// Older backends send role: 'admin' | 'crew' and no permissions.
+function normalizeUser(u) {
+  if (!u) return u;
+  const position = u.position || (u.role === 'admin' ? 'Captain' : 'Deckhand');
+  const captain = position === 'Captain', chief = position === 'Chief Engineer';
+  const perms = u.perms || {
+    manageCrew: captain,
+    createRoutine: captain || chief || position === 'Engineer' || position === 'Bosun',
+    editAll: captain || chief,
+  };
+  return { ...u, position, perms };
+}
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [checking, setChecking] = useState(!!getToken());
@@ -26,26 +39,41 @@ export default function App() {
   const [editing, setEditing] = useState(null); // null | 'new' | task
   const [error, setError] = useState('');
 
-  const load = useCallback((r) => {
-    setUser(r.user);
-    setTasks(r.tasks);
-    setCrew(r.crew);
+  const load = useCallback(async (r) => {
+    // Works with older backends too: fill in anything the server didn't send.
+    let { tasks: t, crew: c } = r;
+    if (!t || !c) {
+      try {
+        [t, c] = await Promise.all([call('listTasks').then((x) => x.tasks), call('listCrew').then((x) => x.crew)]);
+      } catch (e) { setError(e.message); }
+    }
+    setUser(normalizeUser(r.user));
+    setTasks(t || []);
+    setCrew((c || []).map(normalizeUser));
     setVersion((v) => v + 1);
     setError('');
   }, []);
 
+  const fetchAll = useCallback(async () => {
+    try { return await call('bootstrap'); }
+    catch (e) {
+      if (!/Unknown action/.test(e.message)) throw e;
+      return call('me'); // older backend
+    }
+  }, []);
+
   const refresh = useCallback(async () => {
-    try { load(await call('bootstrap')); }
+    try { await load(await fetchAll()); }
     catch (e) { setError(e.message); }
-  }, [load]);
+  }, [load, fetchAll]);
 
   useEffect(() => {
-    if (!getToken()) return;
-    call('bootstrap')
+    if (!getToken()) { setChecking(false); return; }
+    fetchAll()
       .then(load)
       .catch(() => {})
       .finally(() => setChecking(false));
-  }, [load]);
+  }, [load, fetchAll]);
 
   useEffect(() => {
     const onLogout = () => setUser(null);
