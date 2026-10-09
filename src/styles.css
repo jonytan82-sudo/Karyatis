@@ -376,3 +376,5 @@ h3 { font-size: 1.25rem; }
 .hint.perm { margin: 1rem 0; }
 
 .splash small { font-family: var(--body); font-size: 1rem; color: #b9cad4; letter-spacing: 0; }
+
+.link.danger { color: var(--red); }

@@ -10,6 +10,7 @@
  */
 
 // ───────────────────────── CONFIG ─────────────────────────
+const SCRIPT_VERSION = '1.4 (positions, remove crew)';
 const CONFIG = {
   APP_NAME: 'Karyatis',
   APP_URL: '',                 // Netlify URL, used as a link in reminder emails
@@ -119,7 +120,7 @@ function installDailyTrigger() {
 
 // ───────────────────────── API ─────────────────────────
 function doGet() {
-  return json({ ok: true, app: CONFIG.APP_NAME });
+  return json({ ok: true, app: CONFIG.APP_NAME, version: SCRIPT_VERSION });
 }
 
 function doPost(e) {
@@ -146,11 +147,12 @@ function doPost(e) {
       changePassword: () => withLock(() => changePassword(user, req.oldPassword, req.newPassword)),
       addCrew:        () => { requireAdmin(user); return withLock(() => addCrew(user, req.crew || {})); },
       setPosition:    () => { requireAdmin(user); return withLock(() => setPosition(user, req.id, req.position)); },
+      removeCrew:     () => { requireAdmin(user); return withLock(() => removeCrew(user, req.id)); },
       setCrewActive:  () => { requireAdmin(user); return withLock(() => setCrewActive(user, req.id, req.active)); },
       resetPassword:  () => { requireAdmin(user); return withLock(() => resetPassword(user, req.id, req.newPassword)); }
     };
     const fn = handlers[req.action];
-    if (!fn) return json({ ok: false, error: 'Unknown action' });
+    if (!fn) return json({ ok: false, error: 'Unknown action "' + req.action + '". The Google Script is out of date: in Apps Script, Deploy → Manage deployments → Edit → New version.' });
     return json(fn());
   } catch (err) {
     return json({ ok: false, error: err.message });
@@ -219,7 +221,7 @@ function hash(password, salt) {
 
 // ───────────────────────── CREW ─────────────────────────
 function listCrew() {
-  return { ok: true, crew: readTable('Crew').map(publicUser) };
+  return { ok: true, crew: readTable('Crew').filter(c => c.active !== 'REMOVED').map(publicUser) };
 }
 
 function addCrew(user, c) {
@@ -249,6 +251,27 @@ function setPosition(user, id, position) {
   c.role = position;
   update('Crew', c._row, c);
   audit(user.id, 'setPosition', '', c.name + ': ' + old + ' → ' + position);
+  return { ok: true };
+}
+
+/** Removes a crew member from the list. Their name stays on past notes and sign-offs. */
+function removeCrew(user, id) {
+  const all = readTable('Crew');
+  const c = all.find(x => x.id === id);
+  if (!c) throw new Error('Crew member not found');
+  if (c.id === user.id) throw new Error('You cannot remove yourself');
+  if (positionOf(c) === 'Captain' &&
+      all.filter(x => isTrue(x.active) && positionOf(x) === 'Captain').length < 2) {
+    throw new Error('There must be at least one Captain');
+  }
+  c.active = 'REMOVED';
+  update('Crew', c._row, c);
+  readTable('Tasks').filter(t => t.assignedTo === id && t.state === 'Open').forEach(t => {
+    t.assignedTo = '';
+    update('Tasks', t._row, t);
+  });
+  readTable('Sessions').filter(s => s.crewId === id).forEach(s => CacheService.getScriptCache().remove('s_' + s.token));
+  audit(user.id, 'removeCrew', '', c.name);
   return { ok: true };
 }
 

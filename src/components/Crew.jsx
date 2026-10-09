@@ -59,6 +59,11 @@ export default function Crew({ user, crew, onChanged }) {
                     `${c.name} ${c.active ? 'deactivated' : 'reactivated'}.`)}>
                     {c.active ? 'Deactivate' : 'Reactivate'}
                   </button>
+                  <button className="link danger" onClick={() => {
+                    if (window.confirm(`Remove ${c.name} from the crew? Their past notes and sign-offs stay in the log, and their open tasks become unassigned.`)) {
+                      run(() => call('removeCrew', { id: c.id }), `${c.name} removed.`);
+                    }
+                  }}>Remove</button>
                 </span>
               )}
             </li>
