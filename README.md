@@ -1,30 +1,32 @@
-# Karyatis Maintenance Log
+# CJM Marine
 
-Crew maintenance and issue tracker for the vessel Karyatis.
-React + Vite frontend on Netlify, Google Sheets + Apps Script backend.
+Vessel maintenance and crew platform from the CJM marine division.
+React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
 
-## Backend (one time)
-1. New Google Sheet → Extensions → Apps Script → paste `apps-script/Code.gs`.
-2. Project Settings → set the time zone.
-3. Run `setup()`, then edit and run `createFirstAdmin()`. Remove the password from the code after.
-4. Deploy → New deployment → Web app. Execute as: Me. Who has access: Anyone. Copy the `/exec` URL.
+- **Vessels**: each vessel has its own maintenance program, crew and positions. People only see vessels they belong to.
+- **Accounts**: the CJM admin creates vessels and their Captain or Owner. Captains and Owners add crew by email. People without an account can request one from the login page.
+- **Moving between vessels**: inviting an email that already has an account sends an invitation. Their profile, experience and reviews come with them.
+- **Crew profiles**: photo, headline, certifications with expiry, experience, availability, and a business card (.vcf download and print).
+- **Find crew**: Owners and Captains search all crew by free text, position and availability.
+- **Reviews**: Owners and Captains rate crew who served on their vessel. Crew see their own reviews.
 
-## Frontend
-```
-npm install
-cp .env.example .env      # paste the /exec URL into VITE_API_URL
-npm run dev
-```
+## Upgrade from the single-vessel Karyatis version
 
-## Deploy
-1. Push this folder to a new GitHub repo.
-2. Netlify → Add new site → Import from GitHub → pick the repo (build settings come from `netlify.toml`).
-3. Site configuration → Environment variables → add `VITE_API_URL` with the `/exec` URL → redeploy.
-4. Put the Netlify URL in `CONFIG.APP_URL` in Code.gs so reminder emails link to the app.
+1. **Back up**: open the Karyatis Google Sheet and use File → Make a copy.
+2. **Apps Script**: Extensions → Apps Script. Replace all the code with `apps-script/Code.gs` and save.
+   - In `CONFIG` near the top, set `APP_URL` to your Netlify address, e.g. `https://karyatismx.netlify.app`.
+   - In `setupPlatform()`, set `ADMIN_EMAIL` to your login email. `ADMIN_PASSWORD` is only used if that email has no account yet.
+   - Choose `setupPlatform` in the function menu and click Run. Allow the permissions.
+   - Your Karyatis crew, tasks and history move into a vessel named Karyatis. Everyone keeps their password.
+3. **Deploy**: Deploy → Manage deployments → pencil → Version: **New version** → Deploy.
+   Who has access must be **Anyone**. If the URL contains `/a/macros/<your-domain>/`, access is limited to your company domain and crew cannot log in.
+4. **GitHub**: upload everything in this folder to the repo (top level, not inside `src`) and commit. Netlify rebuilds on its own.
+5. **Check**: log in and open **CJM admin**. The bottom of the page should say `Google Script version: 2.0 (CJM Marine multi-vessel)`.
 
-When you change Code.gs, use Deploy → Manage deployments → Edit → New version so the URL stays the same.
+## Fresh install
+Same as above on a new, empty Google Sheet. `setupPlatform()` creates the tabs and your admin account. Then create vessels from the CJM admin tab.
 
-## Positions
-Captain, Chief Engineer, Engineer, Bosun, Interior, Deckhand. The Captain sets each person's position on the Crew tab.
-Rules live in `POSITIONS` and `DEPARTMENTS` at the top of `apps-script/Code.gs`.
-Accounts created before positions existed: admin counts as Captain, crew as Deckhand.
+## Where things live
+- Positions and their rights: `POSITIONS` and `DEPARTMENTS` at the top of `apps-script/Code.gs`.
+- Reminder timing and colors: `CONFIG` in `apps-script/Code.gs`.
+- After any change to `Code.gs`: Deploy → Manage deployments → Edit → **New version**.

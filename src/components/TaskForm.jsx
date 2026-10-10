@@ -8,9 +8,9 @@ const BLANK = {
   recurring: false, intervalValue: '', intervalUnit: 'months', assignedTo: '', note: '',
 };
 
-export default function TaskForm({ initial, crew, user, onClose, onSaved }) {
+export default function TaskForm({ initial, crew, perms, onClose, onSaved }) {
   const editing = !!initial;
-  const canSchedule = user.perms.createRoutine;
+  const canSchedule = perms.createRoutine;
   const [f, setF] = useState(() => (initial
     ? { ...BLANK, ...initial, intervalUnit: initial.intervalUnit || 'months' }
     : { ...BLANK, type: canSchedule ? 'Routine' : 'Issue' }));

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import { call, getToken, setToken } from './api.js';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { call, getToken, getVessel, setToken, setVessel } from './api.js';
 import Login from './components/Login.jsx';
 import Board from './components/Board.jsx';
 import Calendar from './components/Calendar.jsx';
@@ -7,122 +7,146 @@ import TaskList from './components/TaskList.jsx';
 import TaskForm from './components/TaskForm.jsx';
 import TaskDetail from './components/TaskDetail.jsx';
 import Crew from './components/Crew.jsx';
+import Vessels from './components/Vessels.jsx';
+import Profile from './components/Profile.jsx';
+import Directory from './components/Directory.jsx';
+import Admin from './components/Admin.jsx';
+import Invites from './components/Invites.jsx';
 
-const TABS = [
-  ['board', 'Board'],
-  ['calendar', 'Calendar'],
-  ['tasks', 'All tasks'],
-  ['crew', 'Crew'],
-];
-
-// Older backends send role: 'admin' | 'crew' and no permissions.
-function normalizeUser(u) {
-  if (!u) return u;
-  const position = u.position || (u.role === 'admin' ? 'Captain' : 'Deckhand');
-  const captain = position === 'Captain', chief = position === 'Chief Engineer';
-  const perms = u.perms || {
-    manageCrew: captain,
-    createRoutine: captain || chief || position === 'Engineer' || position === 'Bosun',
-    editAll: captain || chief,
-  };
-  return { ...u, position, perms };
-}
+const VESSEL_TABS = ['board', 'calendar', 'tasks', 'crew'];
 
 export default function App() {
-  const [user, setUser] = useState(null);
+  const [s, setS] = useState(null);             // bootstrap result
   const [checking, setChecking] = useState(!!getToken());
-  const [tab, setTab] = useState('board');
-  const [tasks, setTasks] = useState([]);
-  const [crew, setCrew] = useState([]);
+  const [tab, setTab] = useState('');
+  const [busy, setBusy] = useState(false);
   const [version, setVersion] = useState(0);
   const [openId, setOpenId] = useState(null);
-  const [editing, setEditing] = useState(null); // null | 'new' | task
+  const [editing, setEditing] = useState(null);
   const [error, setError] = useState('');
 
-  const load = useCallback(async (r) => {
-    // Works with older backends too: fill in anything the server didn't send.
-    let { tasks: t, crew: c } = r;
-    if (!t || !c) {
-      try {
-        [t, c] = await Promise.all([call('listTasks').then((x) => x.tasks), call('listCrew').then((x) => x.crew)]);
-      } catch (e) { setError(e.message); }
-    }
-    setUser(normalizeUser(r.user));
-    setTasks(t || []);
-    setCrew((c || []).map(normalizeUser));
+  const load = useCallback((r, keepTab) => {
+    setS(r);
+    setVessel(r.vessel ? r.vessel.id : '');
     setVersion((v) => v + 1);
     setError('');
-  }, []);
-
-  const fetchAll = useCallback(async () => {
-    try { return await call('bootstrap'); }
-    catch (e) {
-      if (!/Unknown action/.test(e.message)) throw e;
-      return call('me'); // older backend
+    if (!keepTab) {
+      const hasVessels = (r.memberships || []).length > 0 || (r.vessels || []).length > 0;
+      setTab(r.vessel ? 'board' : hasVessels ? 'vessels' : 'profile');
     }
   }, []);
 
   const refresh = useCallback(async () => {
-    try { await load(await fetchAll()); }
+    try { load(await call('bootstrap', { vesselId: getVessel() }), true); }
     catch (e) { setError(e.message); }
-  }, [load, fetchAll]);
+  }, [load]);
 
   useEffect(() => {
-    if (!getToken()) { setChecking(false); return; }
-    fetchAll()
-      .then(load)
+    if (!getToken()) return;
+    call('bootstrap', { vesselId: getVessel() })
+      .then((r) => load(r))
       .catch(() => {})
       .finally(() => setChecking(false));
-  }, [load, fetchAll]);
+  }, [load]);
 
   useEffect(() => {
-    const onLogout = () => setUser(null);
-    window.addEventListener('karyatis-logout', onLogout);
-    return () => window.removeEventListener('karyatis-logout', onLogout);
+    const onLogout = () => { setS(null); setVessel(''); };
+    window.addEventListener('cjm-logout', onLogout);
+    return () => window.removeEventListener('cjm-logout', onLogout);
   }, []);
+
+  const vesselOptions = useMemo(() => {
+    if (!s) return [];
+    const seen = {};
+    const list = [];
+    (s.memberships || []).forEach((m) => { seen[m.vesselId] = 1; list.push({ id: m.vesselId, name: m.vesselName, position: m.position }); });
+    (s.vessels || []).forEach((v) => { if (!seen[v.vesselId]) list.push({ id: v.vesselId, name: v.vesselName, position: 'CJM admin' }); });
+    return list;
+  }, [s]);
+
+  async function openVessel(id) {
+    setBusy(true);
+    try {
+      setVessel(id);
+      const r = await call('bootstrap', { vesselId: id });
+      load(r);
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  }
 
   async function logout() {
     try { await call('logout'); } catch { /* already gone */ }
     setToken(null);
-    setUser(null);
+    setVessel('');
+    setS(null);
   }
 
-  if (checking) return <div className="splash"><span>Karyatis</span><small>Loading the log…</small></div>;
-  if (!user) return <Login onLogin={load} />;
+  if (checking) return <div className="splash"><span>CJM Marine</span><small>Loading…</small></div>;
+  if (!s) return <Login onLogin={(r) => load(r)} />;
+
+  const { user, vessel, perms, position } = s;
+  const crew = s.crew || [];
+  const tabs = [];
+  if (vessel) tabs.push(['board', 'Board'], ['calendar', 'Calendar'], ['tasks', 'All tasks'], ['crew', 'Crew']);
+  if (vesselOptions.length > 1 || (!vessel && vesselOptions.length)) tabs.push(['vessels', 'Vessels']);
+  tabs.push(['profile', 'My profile']);
+  if (user.canSearch) tabs.push(['directory', 'Find crew']);
+  if (user.isAdmin) tabs.push(['admin', 'CJM admin']);
+  const onVesselTab = vessel && VESSEL_TABS.includes(tab);
 
   return (
     <div className="app">
       <header className="masthead">
         <div className="vessel">
-          <span className="vessel-name">Karyatis</span>
-          <span className="vessel-sub">Maintenance log</span>
+          <span className="brand">CJM Marine</span>
+          {vessel
+            ? <span className="vessel-name">{vessel.name}</span>
+            : <span className="vessel-sub">Maintenance and crew</span>}
         </div>
         <div className="who">
-          <span>{user.name}, {user.position}</span>
+          {vesselOptions.length > 1 && (
+            <select className="switcher" aria-label="Switch vessel" value={vessel ? vessel.id : ''} disabled={busy}
+              onChange={(e) => e.target.value && openVessel(e.target.value)}>
+              {!vessel && <option value="">Choose vessel</option>}
+              {vesselOptions.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+            </select>
+          )}
+          <span>{user.name}{vessel && position ? `, ${position}` : ''}</span>
           <button className="link light" onClick={logout}>Log out</button>
         </div>
       </header>
 
       <nav className="tabs">
-        {TABS.map(([key, label]) => (
+        {tabs.map(([key, label]) => (
           <button key={key} className={tab === key ? 'tab active' : 'tab'} onClick={() => setTab(key)}>
             {label}
+            {key === 'crew' && s.vesselRequests > 0 && <span className="badge">{s.vesselRequests}</span>}
+            {key === 'admin' && s.pendingRequests > 0 && <span className="badge">{s.pendingRequests}</span>}
           </button>
         ))}
-        <button className="btn primary new-task" onClick={() => setEditing('new')}>
-          {user.perms.createRoutine ? 'New task' : 'Report issue'}
-        </button>
+        {onVesselTab && (
+          <button className="btn primary new-task" onClick={() => setEditing('new')}>
+            {perms.createRoutine ? 'New task' : 'Report issue'}
+          </button>
+        )}
       </nav>
 
       <main className="main">
+        <Invites invites={s.invites || []} onDone={(r) => load(r)} />
         {error && <div className="alert">{error} <button className="link" onClick={refresh}>Retry</button></div>}
-        {tab === 'board' && <Board tasks={tasks} onOpen={setOpenId} />}
-        {tab === 'calendar' && <Calendar version={version} onOpen={setOpenId} />}
-        {tab === 'tasks' && <TaskList tasks={tasks} onOpen={setOpenId} />}
-        {tab === 'crew' && <Crew user={user} crew={crew} onChanged={refresh} />}
+        {tab === 'board' && vessel && <Board tasks={s.tasks || []} onOpen={setOpenId} />}
+        {tab === 'calendar' && vessel && <Calendar version={version} onOpen={setOpenId} />}
+        {tab === 'tasks' && vessel && <TaskList tasks={s.tasks || []} onOpen={setOpenId} />}
+        {tab === 'crew' && vessel && (
+          <Crew user={user} vessel={vessel} position={position} perms={perms} crew={crew} onChanged={refresh} />
+        )}
+        {tab === 'vessels' && <Vessels options={vesselOptions} current={vessel} busy={busy} onOpen={openVessel} />}
+        {tab === 'profile' && <Profile user={user} vessel={vessel} onChanged={refresh} />}
+        {tab === 'directory' && user.canSearch && <Directory />}
+        {tab === 'admin' && user.isAdmin && <Admin user={user} onOpenVessel={openVessel} onChanged={refresh} />}
       </main>
 
-      {openId && (
+      {openId && vessel && (
         <TaskDetail
           id={openId}
           onClose={() => setOpenId(null)}
@@ -130,11 +154,11 @@ export default function App() {
           onEdit={(t) => { setOpenId(null); setEditing(t); }}
         />
       )}
-      {editing && (
+      {editing && vessel && (
         <TaskForm
           initial={editing === 'new' ? null : editing}
-          crew={crew}
-          user={user}
+          crew={crew.filter((c) => c.status === 'active')}
+          perms={perms}
           onClose={() => setEditing(null)}
           onSaved={(t) => { setEditing(null); refresh(); setOpenId(t.id); }}
         />

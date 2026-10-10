@@ -4,16 +4,29 @@ export const SYSTEMS = [
   'Tender & toys', 'Galley', 'Interior', 'Other',
 ];
 
-export const POSITIONS = ['Captain', 'Chief Engineer', 'Engineer', 'Bosun', 'Interior', 'Deckhand'];
+export const POSITIONS = ['Owner', 'Captain', 'Chief Engineer', 'Engineer', 'Bosun', 'Interior', 'Deckhand'];
 
 export const POSITION_HELP = {
-  'Captain': 'Full control, manages crew and positions',
+  'Owner': 'Sees everything, manages crew, searches and reviews crew',
+  'Captain': 'Full control of the vessel, manages crew, searches and reviews crew',
   'Chief Engineer': 'Creates, edits, assigns and signs off any task',
   'Engineer': 'Schedules tasks, signs off engine-room systems',
   'Bosun': 'Schedules tasks, signs off deck, tender and safety',
   'Interior': 'Reports issues, signs off galley and interior',
   'Deckhand': 'Reports issues, signs off tasks assigned to them',
 };
+
+export const AVAILABILITY = ['Available', 'Open to offers', 'Employed'];
+
+export const initials = (name = '') => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
+
+export function certStatus(expires) {
+  if (!expires) return '';
+  const days = Math.round((new Date(expires + 'T12:00:00') - new Date()) / 86400000);
+  if (days < 0) return 'expired';
+  if (days <= 90) return 'soon';
+  return 'valid';
+}
 
 export const STATUS = {
   red: 'Overdue',
