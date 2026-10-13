@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { call, getToken, getVessel, setToken, setVessel } from './api.js';
 import Login from './components/Login.jsx';
-import Board from './components/Board.jsx';
+import Board from './components/Board.jsx'; 
 import Calendar from './components/Calendar.jsx';
 import TaskList from './components/TaskList.jsx';
 import TaskForm from './components/TaskForm.jsx';
