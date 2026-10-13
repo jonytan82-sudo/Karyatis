@@ -136,6 +136,12 @@ export default function App() {
       </nav>
 
       <main className="main">
+        {!s.catalog && (
+          <div className="alert">
+            <b>The Google Script is out of date.</b> This website needs version 2.3 or later, so job titles, access levels and work reviews
+            will not work yet. {user.isAdmin ? 'In Apps Script: paste the latest Code.gs, save, then Deploy → Manage deployments → pencil → New version → Deploy.' : 'Please tell the CJM admin.'}
+          </div>
+        )}
         <Invites invites={s.invites || []} onDone={(r) => load(r)} />
         {error && <div className="alert">{error} <button className="link" onClick={refresh}>Retry</button></div>}
         {tab === 'board' && vessel && <Board tasks={s.tasks || []} onOpen={setOpenId} />}

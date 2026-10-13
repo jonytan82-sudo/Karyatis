@@ -73,7 +73,8 @@ export default function Crew({ user, vessel, perms, crew, catalog, onChanged }) 
       {manager && c.id !== user.id && canTouch(c) && (
         <span className="crew-actions">
           {c.status === 'active' && (
-            <button className="btn" onClick={() => setEditing({ member: c, role: { title: c.title, access: c.access, departments: c.departments || [] } })}>Edit role</button>
+            <button className="btn" disabled={!catalog} title={catalog ? '' : 'Update the Google Script to 2.3 first'}
+              onClick={() => setEditing({ member: c, role: { title: c.title, access: c.access, departments: c.departments || [] } })}>Edit role</button>
           )}
           {c.needsSetup && c.status === 'active' && <button className="link" onClick={() => resend(c)}>New setup link</button>}
           <button className="link danger" onClick={() => remove(c)}>{c.status === 'invited' ? 'Cancel invite' : 'Remove'}</button>
