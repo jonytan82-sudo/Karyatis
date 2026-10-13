@@ -5,6 +5,27 @@ import Avatar from './Avatar.jsx';
 import BusinessCard from './BusinessCard.jsx';
 import ProfileView from './ProfileView.jsx';
 
+function RecordBackup() {
+  const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const send = async () => {
+    setBusy(true); setErr(''); setMsg('');
+    try { setMsg((await call('emailMyRecord')).message); } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  return (
+    <div className="record-box card">
+      <div>
+        <b>Your record backup</b>
+        <p className="hint">Every week you get an email with a Google Sheet of your sea time, certifications, work reviews and recommendations, plus an Excel copy. Keep it for your files in case the site is ever down.</p>
+      </div>
+      <button className="btn" disabled={busy} onClick={send}>{busy ? 'Sending…' : 'Email it to me now'}</button>
+      {msg && <div className="ok">{msg}</div>}
+      {err && <div className="alert">{err}</div>}
+    </div>
+  );
+}
+
 /** Square-crops and shrinks a photo so it fits in one Google Sheets cell. */
 function resizePhoto(file) {
   return new Promise((resolve, reject) => {
@@ -66,7 +87,7 @@ export default function Profile({ user, onChanged }) {
       const r = await call('saveProfile', { profile: {
         name: f.name, photo: f.photo, headline: f.headline, bio: f.bio, location: f.location,
         yearsExperience: f.yearsExperience, availability: f.availability, phone: f.phone,
-        showContact: f.showContact, languages: f.languages,
+        showContact: f.showContact, shareReviews: f.shareReviews, languages: f.languages,
         certifications: f.certifications, experience: f.experience,
       } });
       take(r);
@@ -74,6 +95,12 @@ export default function Profile({ user, onChanged }) {
       if (f.name !== user.name) onChanged();
     } catch (err) { setError(err.message); }
     finally { setBusy(false); }
+  }
+
+  async function enableSharing() {
+    setError(''); setMsg('');
+    try { take(await call('saveProfile', { profile: { shareReviews: true } })); setMsg('Review sharing is on. Your card now has a reviews code.'); }
+    catch (err) { setError(err.message); }
   }
 
   async function changePw(e) {
@@ -135,6 +162,10 @@ export default function Profile({ user, onChanged }) {
               <input type="checkbox" checked={!!f.showContact} onChange={set('showContact')} />
               Show my phone and email to owners and captains searching for crew
             </label>
+            <label className="check">
+              <input type="checkbox" checked={!!f.shareReviews} onChange={set('shareReviews')} />
+              Let anyone who scans my business card QR code read my reviews (reviewers' names stay hidden)
+            </label>
           </fieldset>
 
           <fieldset className="recur">
@@ -169,12 +200,13 @@ export default function Profile({ user, onChanged }) {
 
       {sub === 'preview' && data && (
         <>
+          <RecordBackup />
           <p className="hint">This is how owners and captains see your profile.</p>
           <div className="card"><ProfileView data={data} /></div>
         </>
       )}
 
-      {sub === 'card' && data && <BusinessCard profile={data.profile} />}
+      {sub === 'card' && data && <BusinessCard profile={data.profile} onEnableSharing={enableSharing} />}
 
       {sub === 'password' && (
         <form className="form card" onSubmit={changePw}>

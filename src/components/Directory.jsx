@@ -64,6 +64,7 @@ export default function Directory() {
               <span className="dir-side">
                 {r.availability && <span className={`pill av-${r.availability.replace(/\s+/g, '-').toLowerCase()}`}>{r.availability}</span>}
                 <Stars value={r.rating} count={r.reviewCount} />
+                {r.workCount > 0 && <span className="score">{r.workScore.toFixed(1)}/10 work ({r.workCount})</span>}
               </span>
             </button>
           </li>

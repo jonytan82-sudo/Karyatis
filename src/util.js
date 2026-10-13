@@ -69,3 +69,12 @@ export function everyText(t) {
   const unit = n === 1 ? t.intervalUnit.replace(/s$/, '') : t.intervalUnit;
   return `Every ${n} ${unit}`;
 }
+
+export function fmtDays(d) {
+  d = Number(d) || 0;
+  if (d < 31) return `${d} day${d === 1 ? '' : 's'}`;
+  const months = Math.round(d / 30.44);
+  if (months < 12) return `${months} months`;
+  const y = Math.floor(months / 12), m = months % 12;
+  return `${y} yr${m ? ` ${m} mo` : ''}`;
+}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import Modal from './Modal.jsx';
 import { call } from '../api.js';
 import { STATUS, dueText, everyText, fmtDate, fmtStamp, todayISO } from '../util.js';
@@ -8,7 +8,8 @@ export default function TaskDetail({ id, onClose, onChanged, onEdit }) {
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
   const [signing, setSigning] = useState(false);
-  const [sign, setSign] = useState({ performedDate: todayISO(), notes: '', resolution: '' });
+  const [sign, setSign] = useState({ performedDate: todayISO(), notes: '', resolution: '', requestReview: false, reviewMessage: '' });
+  const [info, setInfo] = useState('');
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(() => call('getTask', { id }).then((r) => { setData(r); setError(''); })
@@ -26,11 +27,17 @@ export default function TaskDetail({ id, onClose, onChanged, onEdit }) {
   const signOff = (e) => {
     e.preventDefault();
     run(async () => {
-      await call('completeTask', { id, ...sign });
+      const r = await call('completeTask', { id, ...sign });
       setSigning(false);
-      setSign({ performedDate: todayISO(), notes: '', resolution: '' });
+      setSign({ performedDate: todayISO(), notes: '', resolution: '', requestReview: false, reviewMessage: '' });
+      setInfo(r.reviewRequested ? 'Signed off. The Captain has been asked to review your work.' : '');
     });
   };
+
+  const askReview = (completionId) => run(async () => {
+    await call('requestTaskReview', { completionId });
+    setInfo('Review requested. The Captain gets an email; reviews are optional.');
+  });
 
   const addNote = (e) => {
     e.preventDefault();
@@ -66,6 +73,7 @@ export default function TaskDetail({ id, onClose, onChanged, onEdit }) {
       {t.resolution && <div className="resolution"><b>Resolution</b><p>{t.resolution}</p></div>}
 
       {error && <div className="alert">{error}</div>}
+      {info && <div className="ok">{info}</div>}
 
       {open && !signing && (t.canSignOff || t.canEdit) && (
         <div className="actions left">
@@ -101,6 +109,19 @@ export default function TaskDetail({ id, onClose, onChanged, onEdit }) {
               placeholder="Hours, readings, parts used" />
           </label>
           {t.recurring && <p className="hint">The next due date will be set from the date performed.</p>}
+          {data.canRequestReview && (
+            <div className="review-ask">
+              <label className="check">
+                <input type="checkbox" checked={sign.requestReview} onChange={(e) => setSign({ ...sign, requestReview: e.target.checked })} />
+                Ask the Captain to review my work (1 to 10)
+              </label>
+              {sign.requestReview && (
+                <textarea rows={2} value={sign.reviewMessage} onChange={(e) => setSign({ ...sign, reviewMessage: e.target.value })}
+                  placeholder="Anything the Captain should know (optional)" aria-label="Message to the Captain" />
+              )}
+              <p className="hint">Reviews go on your personal record and stay with you when you change boats.</p>
+            </div>
+          )}
           <div className="actions left">
             <button className="btn primary" disabled={busy}>{busy ? 'Saving…' : isIssue ? 'Close issue' : 'Sign off'}</button>
             <button type="button" className="btn" onClick={() => setSigning(false)}>Cancel</button>
@@ -126,15 +147,30 @@ export default function TaskDetail({ id, onClose, onChanged, onEdit }) {
         <section className="block">
           <h3>Sign-off history</h3>
           <table className="history">
-            <thead><tr><th>Performed</th><th>Was due</th><th>By</th><th>Timing</th></tr></thead>
+            <thead><tr><th>Performed</th><th>Was due</th><th>By</th><th>Timing</th><th>Review</th></tr></thead>
             <tbody>
               {[...data.completions].reverse().map((c, i) => (
-                <tr key={i}>
+                <Fragment key={i}>
+                <tr>
                   <td>{fmtDate(c.performedDate)}</td>
                   <td>{fmtDate(c.dueDate) || 'None'}</td>
                   <td>{c.by}</td>
                   <td className={c.timing.startsWith('Late') ? 'late' : ''}>{c.timing}</td>
+                  <td>
+                    {c.review && c.review.status === 'reviewed' && (
+                      <span className="score" title={c.review.text || ''}>{c.review.score}/10</span>
+                    )}
+                    {c.review && c.review.status === 'requested' && <span className="muted">Requested</span>}
+                    {c.review && c.review.status === 'skipped' && <span className="muted">Not reviewed</span>}
+                    {!c.review && c.canRequestReview && (
+                      <button className="link" disabled={busy} onClick={() => askReview(c.id)}>Ask for review</button>
+                    )}
+                  </td>
                 </tr>
+                {c.review && c.review.status === 'reviewed' && c.review.text && (
+                  <tr className="review-row"><td colSpan={5}>“{c.review.text}”</td></tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>

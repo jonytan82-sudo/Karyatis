@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { call } from '../api.js';
-import { certStatus, fmtDate, fmtStamp } from '../util.js';
+import { certStatus, fmtDate, fmtDays, fmtStamp } from '../util.js';
 import Avatar from './Avatar.jsx';
 import BusinessCard from './BusinessCard.jsx';
 import { StarInput, Stars } from './Stars.jsx';
+import WorkRecord from './WorkRecord.jsx';
 
 const monthYear = (iso) => (iso ? new Date(iso + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', year: 'numeric' }) : '');
 
@@ -57,6 +58,9 @@ export default function ProfileView({ userId, data: initial }) {
           <div className="pv-tags">
             {p.availability && <span className={`pill av-${p.availability.replace(/\s+/g, '-').toLowerCase()}`}>{p.availability}</span>}
             <Stars value={data.summary.rating} count={data.summary.reviewCount} />
+            {data.performance && data.performance.count > 0 && (
+              <span className="score">{data.performance.average.toFixed(1)}/10 work ({data.performance.count})</span>
+            )}
           </div>
         </div>
       </header>
@@ -96,7 +100,7 @@ export default function ProfileView({ userId, data: initial }) {
             {p.vesselHistory.map((v, i) => (
               <li key={'v' + i}>
                 <span><b>{v.position}</b>, {v.vesselName}{v.length ? ` (${v.length})` : ''}</span>
-                <small>{monthYear(v.from)} to {v.current ? 'present' : monthYear(v.to)}, verified on CJM Marine</small>
+                <small>{monthYear(v.from)} to {v.current ? 'present' : monthYear(v.to)}{v.days ? `, ${fmtDays(v.days)} aboard` : ''}, verified on CJM Marine</small>
               </li>
             ))}
             {p.experience.map((x, i) => (
@@ -110,8 +114,13 @@ export default function ProfileView({ userId, data: initial }) {
       )}
 
       <section className="block">
-        <h3>Reviews</h3>
-        {data.reviews.length === 0 && <p className="empty">No reviews yet.</p>}
+        <h3>Work reviews</h3>
+        <WorkRecord performance={data.performance} />
+      </section>
+
+      <section className="block">
+        <h3>Recommendations</h3>
+        {data.reviews.length === 0 && <p className="empty">No recommendations yet.</p>}
         <ul className="reviews">
           {data.reviews.map((r) => (
             <li key={r.id}>
@@ -126,11 +135,11 @@ export default function ProfileView({ userId, data: initial }) {
         </ul>
         {data.canReview && (
           <form className="form review-form" onSubmit={save}>
-            <h4>{mine ? 'Update your review' : `Review ${p.name.split(' ')[0]}`}</h4>
+            <h4>{mine ? 'Update your recommendation' : `Recommend ${p.name.split(' ')[0]}`}</h4>
             <StarInput value={rev.rating} onChange={(n) => setRev({ ...rev, rating: n })} />
             <textarea rows={3} value={rev.text} onChange={(e) => setRev({ ...rev, text: e.target.value })}
               placeholder="What was it like working with them?" aria-label="Review" />
-            <div className="actions left"><button className="btn primary" disabled={busy}>{mine ? 'Update review' : 'Post review'}</button></div>
+            <div className="actions left"><button className="btn primary" disabled={busy}>{mine ? 'Update' : 'Post recommendation'}</button></div>
           </form>
         )}
       </section>

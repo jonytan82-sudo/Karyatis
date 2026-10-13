@@ -29,6 +29,13 @@ export default function Admin({ user, onOpenVessel, onChanged }) {
     finally { setBusy(false); }
   }
 
+  const [backup, setBackup] = useState(null);
+  const sendBackup = async (vesselId) => {
+    setBackup(null);
+    const r = await run(() => call('sendBackupNow', { backupVesselId: vesselId || '' }));
+    if (r) setBackup(r);
+  };
+
   const create = async (e) => {
     e.preventDefault();
     const r = await run(() => call('createVessel', { vessel: form }), `${form.name} added.`);
@@ -98,6 +105,7 @@ export default function Admin({ user, onOpenVessel, onChanged }) {
               </div>
               <div className="fleet-actions">
                 {v.active && <button className="btn" onClick={() => onOpenVessel(v.id)}>Open</button>}
+                {v.active && <button className="link" disabled={busy} onClick={() => sendBackup(v.id)}>Email backup</button>}
                 <button className="link" onClick={() => {
                   if (v.active && !window.confirm(`Archive ${v.name}? Its crew lose access until you restore it. Nothing is deleted.`)) return;
                   run(() => call('updateVessel', { id: v.id, vessel: { active: !v.active } }), `${v.name} ${v.active ? 'archived' : 'restored'}.`);
@@ -106,6 +114,28 @@ export default function Admin({ user, onOpenVessel, onChanged }) {
             </li>
           ))}
         </ul>
+      </section>
+
+      <section className="group">
+        <div className="group-head">
+          <h3>Daily backup</h3>
+          <button className="btn" disabled={busy} onClick={() => sendBackup('')}>{busy ? 'Working…' : 'Email all backups now'}</button>
+        </div>
+        <p className="hint">
+          Every morning each vessel's open tasks, open issues and last 30 days of sign-offs are saved as a Google Sheet in your Drive
+          folder "CJM Marine backups". The vessel's Captain gets their vessel's sheet by email with an Excel copy attached, and you
+          get one email covering every vessel.
+        </p>
+        {backup && (
+          <div className="ok">
+            Backup sent for {backup.vessels} vessel{backup.vessels === 1 ? '' : 's'}.
+            <ul className="backup-links">
+              {backup.files.map((f) => (
+                <li key={f.url}><a href={f.url} target="_blank" rel="noreferrer">{f.vessel}</a>: {f.counts.tasks} tasks, {f.counts.issues} issues, {f.counts.overdue} overdue</li>
+              ))}
+            </ul>
+          </div>
+        )}
       </section>
 
       <Requests vessels={activeVessels.map((v) => ({ id: v.id, name: v.name }))} canGrantOwner onChanged={() => { load(); onChanged(); }} />

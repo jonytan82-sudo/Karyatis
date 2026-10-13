@@ -11,9 +11,10 @@ import Vessels from './components/Vessels.jsx';
 import Profile from './components/Profile.jsx';
 import Directory from './components/Directory.jsx';
 import Admin from './components/Admin.jsx';
+import WorkReviews from './components/WorkReviews.jsx';
 import Invites from './components/Invites.jsx';
 
-const VESSEL_TABS = ['board', 'calendar', 'tasks', 'crew'];
+const VESSEL_TABS = ['board', 'calendar', 'tasks', 'crew', 'reviews'];
 
 export default function App() {
   const [s, setS] = useState(null);             // bootstrap result
@@ -88,6 +89,7 @@ export default function App() {
   const crew = s.crew || [];
   const tabs = [];
   if (vessel) tabs.push(['board', 'Board'], ['calendar', 'Calendar'], ['tasks', 'All tasks'], ['crew', 'Crew']);
+  if (vessel && s.canReviewWork) tabs.push(['reviews', 'Reviews']);
   if (vesselOptions.length > 1 || (!vessel && vesselOptions.length)) tabs.push(['vessels', 'Vessels']);
   tabs.push(['profile', 'My profile']);
   if (user.canSearch) tabs.push(['directory', 'Find crew']);
@@ -121,6 +123,7 @@ export default function App() {
           <button key={key} className={tab === key ? 'tab active' : 'tab'} onClick={() => setTab(key)}>
             {label}
             {key === 'crew' && s.vesselRequests > 0 && <span className="badge">{s.vesselRequests}</span>}
+            {key === 'reviews' && s.pendingTaskReviews > 0 && <span className="badge">{s.pendingTaskReviews}</span>}
             {key === 'admin' && s.pendingRequests > 0 && <span className="badge">{s.pendingRequests}</span>}
           </button>
         ))}
@@ -137,6 +140,7 @@ export default function App() {
         {tab === 'board' && vessel && <Board tasks={s.tasks || []} onOpen={setOpenId} />}
         {tab === 'calendar' && vessel && <Calendar version={version} onOpen={setOpenId} />}
         {tab === 'tasks' && vessel && <TaskList tasks={s.tasks || []} onOpen={setOpenId} />}
+        {tab === 'reviews' && vessel && s.canReviewWork && <WorkReviews vessel={vessel} onChanged={refresh} />}
         {tab === 'crew' && vessel && (
           <Crew user={user} vessel={vessel} position={position} perms={perms} crew={crew} onChanged={refresh} />
         )}

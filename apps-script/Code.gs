@@ -5,7 +5,8 @@
  * FIRST-TIME SETUP (or upgrading from the single-vessel Karyatis version):
  *   1. Paste this file into Extensions → Apps Script of your Google Sheet and save.
  *   2. Edit the four values at the top of setupPlatform() and run it once.
- *   3. Deploy → Manage deployments → edit → New version (or New deployment → Web app,
+ *   3. Run setupBackups() once (daily Google Sheets backup, needs Drive permission).
+ *   4. Deploy → Manage deployments → edit → New version (or New deployment → Web app,
  *      Execute as: Me, Who has access: Anyone). Put the /exec URL in Netlify as VITE_API_URL.
  *
  * The frontend talks to this with POST requests:
@@ -13,7 +14,7 @@
  *                body: JSON.stringify({ action, token, vesselId, ... }) })
  */
 
-const SCRIPT_VERSION = '2.0 (CJM Marine multi-vessel)';
+const SCRIPT_VERSION = '2.2 (work reviews, crew record backups)';
 
 // ───────────────────────── CONFIG ─────────────────────────
 const CONFIG = {
@@ -25,13 +26,22 @@ const CONFIG = {
   RECUR_FROM: 'performed',     // 'performed' = next due counts from date done; 'due' = from old due date
   SESSION_DAYS: 30,            // people stay logged in this long
   SETUP_LINK_DAYS: 7,          // how long an account setup link works
-  DIGEST_HOUR: 7               // hour (script time zone) the daily reminder runs
+  DIGEST_HOUR: 7,              // hour (script time zone) the daily reminder runs
+  BACKUP_HOUR: 5,              // hour the daily Google Sheets backup is emailed
+  BACKUP_TO: ['Captain'],      // vessel positions that get their vessel's backup (CJM admins always get all)
+  BACKUP_KEEP_DAYS: 30,        // older backup files are moved to the Drive trash
+  BACKUP_FOLDER: 'CJM Marine backups',
+  REVIEW_REQUEST_DAYS: 60,     // crew can ask for a review of work done in the last N days
+  REVIEW_EMAILS: true,         // email the Captain when crew ask for a review, and crew when it is answered
+  CREW_RECORD_EVERY_DAYS: 7,   // each crew member gets their personal record by email this often
+  CREW_RECORD_PER_RUN: 25      // max crew records sent per daily run (spreads the email load)
 };
 
 const SHEETS = {
   Users:       ['id', 'name', 'email', 'passwordHash', 'salt', 'active', 'isAdmin', 'createdAt'],
   Profiles:    ['userId', 'photo', 'headline', 'bio', 'location', 'yearsExperience', 'availability',
-                'phone', 'showContact', 'languages', 'certifications', 'experience', 'updatedAt'],
+                'phone', 'showContact', 'languages', 'certifications', 'experience', 'updatedAt',
+                'shareReviews', 'shareId'],
   Vessels:     ['id', 'name', 'type', 'length', 'homePort', 'active', 'createdAt', 'createdBy'],
   Memberships: ['id', 'vesselId', 'userId', 'position', 'status', 'joinedAt', 'leftAt', 'invitedBy'],
   Sessions:    ['token', 'userId', 'expiresAt'],
@@ -45,6 +55,8 @@ const SHEETS = {
                 'resolution', 'reminderLog', 'vesselId'],
   Completions: ['id', 'taskId', 'dueDate', 'performedDate', 'performedBy', 'timing', 'notes', 'loggedAt'],
   Notes:       ['id', 'taskId', 'userId', 'text', 'createdAt'],
+  TaskReviews: ['id', 'vesselId', 'taskId', 'completionId', 'userId', 'requestedAt', 'message',
+                'status', 'reviewerId', 'score', 'text', 'reviewedAt'],
   Audit:       ['timestamp', 'userId', 'action', 'taskId', 'details', 'vesselId']
 };
 
@@ -159,9 +171,10 @@ function fillBlankColumn(name, column, value) {
 
 function installDailyTrigger() {
   ScriptApp.getProjectTriggers()
-    .filter(t => t.getHandlerFunction() === 'dailyReminders')
+    .filter(t => ['dailyReminders', 'dailyBackups'].indexOf(t.getHandlerFunction()) !== -1)
     .forEach(t => ScriptApp.deleteTrigger(t));
   ScriptApp.newTrigger('dailyReminders').timeBased().everyDays(1).atHour(CONFIG.DIGEST_HOUR).create();
+  ScriptApp.newTrigger('dailyBackups').timeBased().everyDays(1).atHour(CONFIG.BACKUP_HOUR).create();
 }
 
 // ───────────────────────── API ─────────────────────────
@@ -182,7 +195,8 @@ function doPost(e) {
       confirmReset:   () => withLock(() => confirmReset(req.email, req.code, req.newPassword)),
       requestAccount: () => withLock(() => requestAccount(req.request || {})),
       getSetup:       () => getSetup(req.setupToken),
-      completeSetup:  () => withLock(() => completeSetup(req.setupToken, req.newPassword))
+      completeSetup:  () => withLock(() => completeSetup(req.setupToken, req.newPassword)),
+      publicReviews:  () => publicReviews(req.shareId)
     };
     if (pub[req.action]) return json(pub[req.action]());
 
@@ -202,6 +216,11 @@ function doPost(e) {
       updateTask:     () => withLock(() => updateTask(V(), user, req.id, req.task || {})),
       completeTask:   () => withLock(() => completeTask(V(), user, req)),
       addNote:        () => withLock(() => addNote(V(), user, req.taskId, req.text)),
+      requestTaskReview: () => withLock(() => requestTaskReview(V(), user, req.completionId, req.message, true)),
+      listTaskReviews:   () => listTaskReviews(V(), user),
+      submitTaskReview:  () => withLock(() => submitTaskReview(V(), user, req.reviewId, req.score, req.text)),
+      skipTaskReview:    () => withLock(() => skipTaskReview(V(), user, req.reviewId)),
+      emailMyRecord:     () => emailMyRecord(user),
 
       // vessel crew
       listCrew:       () => ({ ok: true, crew: listCrew(V()) }),
@@ -226,7 +245,8 @@ function doPost(e) {
       adminOverview:  () => { requireAdmin(user); return adminOverview(); },
       createVessel:   () => { requireAdmin(user); return withLock(() => createVessel(user, req.vessel || {})); },
       updateVessel:   () => { requireAdmin(user); return withLock(() => updateVessel(user, req.id, req.vessel || {})); },
-      setUserActive:  () => { requireAdmin(user); return withLock(() => setUserActive(user, req.userId, req.active)); }
+      setUserActive:  () => { requireAdmin(user); return withLock(() => setUserActive(user, req.userId, req.active)); },
+      sendBackupNow:  () => { requireAdmin(user); return sendBackupNow(user, req.backupVesselId); }
     };
     const fn = handlers[req.action];
     if (!fn) return json({ ok: false, error: 'Unknown action "' + req.action + '". The Google Script is out of date: in Apps Script, Deploy → Manage deployments → Edit → New version.' });
@@ -420,6 +440,8 @@ function bootstrap(user, vesselId) {
       out.tasks = listTasks(c, user);
       out.crew = listCrew(c);
       out.vesselRequests = c.perms.manageCrew ? requestsVisibleTo(user, c.vessel.id).length : 0;
+      out.canReviewWork = isVesselReviewer(c.vessel.id, user.id);
+      out.pendingTaskReviews = out.canReviewWork ? pendingReviewsFor(c.vessel.id, user.id).length : 0;
     } catch (e) { /* not a member any more: frontend shows the vessel picker */ }
   }
   return out;
@@ -732,7 +754,8 @@ function vesselHistory(userId) {
     .map(m => ({ vesselId: m.vesselId, vesselName: vessels[m.vesselId].name, vesselType: vessels[m.vesselId].type,
                  length: vessels[m.vesselId].length, position: positionOf(m.position),
                  from: (m.joinedAt || '').slice(0, 10), to: m.status === 'left' ? (m.leftAt || '').slice(0, 10) : '',
-                 current: m.status === 'active' }))
+                 current: m.status === 'active',
+                 days: m.joinedAt ? Math.max(0, daysBetween(m.joinedAt.slice(0, 10), m.status === 'left' && m.leftAt ? m.leftAt.slice(0, 10) : today())) : 0 }))
     .sort((a, b) => (b.from || '') < (a.from || '') ? -1 : 1);
 }
 
@@ -790,10 +813,13 @@ function getProfile(viewer, userId) {
       yearsExperience: p.yearsExperience || '', availability: p.availability || '',
       showContact: isTrue(p.showContact), languages: p.languages || '',
       certifications: parseList(p.certifications), experience: parseList(p.experience),
-      vesselHistory: vesselHistory(userId), updatedAt: p.updatedAt || ''
+      vesselHistory: vesselHistory(userId), updatedAt: p.updatedAt || '',
+      shareReviews: isTrue(p.shareReviews),
+      shareId: isTrue(p.shareReviews) ? (p.shareId || '') : ''
     },
     reviews,
     summary: ratingSummary(userId),
+    performance: performanceOf(userId, true),
     self,
     canReview: !!reviewVessel,
     canModerate: isTrue(viewer.isAdmin)
@@ -823,6 +849,10 @@ function saveProfile(user, p) {
   if (p.yearsExperience !== undefined) row.yearsExperience = clip(p.yearsExperience, 3).replace(/\D/g, '');
   if (p.availability !== undefined) row.availability = AVAILABILITY.indexOf(p.availability) !== -1 ? p.availability : '';
   if (p.showContact !== undefined) row.showContact = p.showContact ? 'TRUE' : 'FALSE';
+  if (p.shareReviews !== undefined) {
+    row.shareReviews = p.shareReviews ? 'TRUE' : 'FALSE';
+    if (p.shareReviews && !row.shareId) row.shareId = Utilities.getUuid().replace(/-/g, '').slice(0, 16);
+  }
   if (p.certifications !== undefined) {
     row.certifications = JSON.stringify((p.certifications || []).slice(0, 40)
       .map(x => ({ name: clip(x.name, 120), expires: /^\d{4}-\d{2}-\d{2}$/.test(x.expires || '') ? x.expires : '' }))
@@ -853,6 +883,8 @@ function searchCrew(viewer, req) {
   });
   const reviews = {};
   readTable('Reviews').forEach(r => (reviews[r.userId] = reviews[r.userId] || []).push(Number(r.rating)));
+  const work = {};
+  readTable('TaskReviews').forEach(r => { if (r.status === 'reviewed') (work[r.userId] = work[r.userId] || []).push(Number(r.score)); });
 
   const results = readTable('Users').filter(u => isTrue(u.active) && u.id !== viewer.id).map(u => {
     const p = profiles[u.id] || {};
@@ -868,7 +900,9 @@ function searchCrew(viewer, req) {
       availability: p.availability || '', yearsExperience: p.yearsExperience || '',
       positions, currentPosition: (ms.find(m => m.active) || {}).position || '',
       certCount: certs.length, rating: rs.length ? Math.round(rs.reduce((a, b) => a + b, 0) / rs.length * 10) / 10 : 0,
-      reviewCount: rs.length, hasProfile: !!profiles[u.id], _text: text
+      reviewCount: rs.length, hasProfile: !!profiles[u.id], _text: text,
+      workCount: (work[u.id] || []).length,
+      workScore: (work[u.id] || []).length ? Math.round((work[u.id].reduce((a, b) => a + b, 0) / work[u.id].length) * 10) / 10 : 0
     };
   }).filter(r => (r.hasProfile || r.positions.length) &&
     words.every(w => r._text.indexOf(w) !== -1) &&
@@ -905,6 +939,284 @@ function deleteReview(viewer, id) {
   delete TABLE_CACHE.Reviews;
   audit(viewer.id, 'deleteReview', '', userName(r.userId), r.vesselId);
   return getProfile(viewer, r.userId);
+}
+
+/**
+ * Read-only reviews page opened from the QR code on a business card. No login.
+ * Only works when the crew member has turned on review sharing. Reviewers are shown
+ * by position and vessel, not by name.
+ */
+function publicReviews(shareId) {
+  shareId = String(shareId || '');
+  const p = shareId.length >= 12 && readTable('Profiles').find(x => x.shareId === shareId && isTrue(x.shareReviews));
+  const user = p && readTable('Users').find(u => u.id === p.userId && isTrue(u.active));
+  if (!user) throw new Error('These reviews are not available. The link may be old, or sharing was turned off.');
+  const vessels = {};
+  readTable('Vessels').forEach(v => vessels[v.id] = v.name);
+  const ms = readTable('Memberships');
+  const roleOf = (reviewerId, vesselId) => {
+    const m = ms.find(x => x.userId === reviewerId && x.vesselId === vesselId);
+    return m ? positionOf(m.position) : 'Captain';
+  };
+  const reviews = readTable('Reviews').filter(r => r.userId === user.id)
+    .sort((a, b) => a.createdAt < b.createdAt ? 1 : -1)
+    .map(r => ({ rating: Number(r.rating), text: r.text, date: (r.createdAt || '').slice(0, 10),
+                 by: roleOf(r.reviewerId, r.vesselId), vesselName: vessels[r.vesselId] || '' }));
+  const current = vesselHistory(user.id).find(v => v.current);
+  return {
+    ok: true,
+    name: user.name, photo: p.photo || '', headline: p.headline || (current ? current.position : ''),
+    location: p.location || '', yearsExperience: p.yearsExperience || '',
+    summary: ratingSummary(user.id), reviews,
+    performance: performanceOf(user.id, false)
+  };
+}
+
+// ───────────────────────── WORK REVIEWS (1–10, requested by crew) ─────────────────────────
+/** Owners and Captains on the vessel (active members), excluding someone. */
+function vesselReviewers(vesselId, exceptUserId) {
+  const users = {};
+  readTable('Users').forEach(u => users[u.id] = u);
+  return readTable('Memberships').filter(m => m.vesselId === vesselId && m.status === 'active' && m.userId !== exceptUserId &&
+    POSITIONS[positionOf(m.position)].hires && users[m.userId] && isTrue(users[m.userId].active))
+    .map(m => users[m.userId]);
+}
+
+function isVesselReviewer(vesselId, userId) {
+  return readTable('Memberships').some(m => m.vesselId === vesselId && m.userId === userId && m.status === 'active' &&
+    POSITIONS[positionOf(m.position)].hires);
+}
+
+function pendingReviewsFor(vesselId, reviewerId) {
+  return readTable('TaskReviews').filter(r => r.vesselId === vesselId && r.status === 'requested' && r.userId !== reviewerId);
+}
+
+function requestTaskReview(c, user, completionId, message, returnTask) {
+  const x = readTable('Completions').find(k => k.id === completionId);
+  const t = x && taskIn(c, x.taskId);
+  if (!x || !t) throw new Error('Sign-off not found');
+  if (x.performedBy !== user.id) throw new Error('You can only ask for a review of your own work');
+  if (readTable('TaskReviews').some(r => r.completionId === completionId)) throw new Error('A review was already requested for this work');
+  if (x.performedDate < addInterval(today(), -CONFIG.REVIEW_REQUEST_DAYS, 'days')) {
+    throw new Error('Reviews can be requested within ' + CONFIG.REVIEW_REQUEST_DAYS + ' days of the work');
+  }
+  const reviewers = vesselReviewers(c.vessel.id, user.id);
+  if (!reviewers.length) throw new Error('This vessel has no Captain or Owner to review your work');
+  insert('TaskReviews', { id: newId('W'), vesselId: c.vessel.id, taskId: t.id, completionId, userId: user.id,
+    requestedAt: nowIso(), message: clip(message, 500), status: 'requested', reviewerId: '', score: '', text: '', reviewedAt: '' });
+  audit(user.id, 'requestReview', t.id, 'Work on ' + x.performedDate, c.vessel.id);
+  if (CONFIG.REVIEW_EMAILS) {
+    sendMail(reviewers.map(r => r.email).join(','), 'Review requested: ' + user.name + ', ' + t.title,
+      '<p><b>' + esc(user.name) + '</b> asked you to review their work on <b>' + esc(t.title) + '</b> (' + esc(c.vessel.name) +
+      ', ' + x.performedDate + ').</p>' + (message ? '<p><i>' + esc(clip(message, 500)) + '</i></p>' : '') +
+      '<p>Reviews are optional. They become part of the crew member\'s record.</p>' + appLink());
+  }
+  return returnTask ? getTask(c, user, t.id) : { ok: true };
+}
+
+function requireReviewer(c, user) {
+  if (!isVesselReviewer(c.vessel.id, user.id)) throw new Error('Only the Captain or Owner of this vessel can review work');
+}
+
+function reviewView(r, names, tasks, comps) {
+  const t = tasks[r.taskId] || {};
+  const x = comps[r.completionId] || {};
+  return { id: r.id, crewId: r.userId, crewName: names[r.userId] || '', task: t.title || '', system: t.system || '',
+           taskId: r.taskId, performedDate: x.performedDate || '', timing: x.timing || '', workNotes: x.notes || '',
+           message: r.message, requestedAt: r.requestedAt, status: r.status, score: r.score ? Number(r.score) : null,
+           text: r.text, reviewedAt: r.reviewedAt, reviewer: names[r.reviewerId] || '' };
+}
+
+function listTaskReviews(c, user) {
+  requireReviewer(c, user);
+  const names = crewNames();
+  const tasks = {}; vesselTasks(c).forEach(t => tasks[t.id] = t);
+  const comps = {}; readTable('Completions').forEach(x => comps[x.id] = x);
+  const all = readTable('TaskReviews').filter(r => r.vesselId === c.vessel.id && r.userId !== user.id);
+  return {
+    ok: true,
+    pending: all.filter(r => r.status === 'requested').sort((a, b) => a.requestedAt < b.requestedAt ? -1 : 1)
+      .map(r => reviewView(r, names, tasks, comps)),
+    done: all.filter(r => r.status !== 'requested').sort((a, b) => a.reviewedAt < b.reviewedAt ? 1 : -1).slice(0, 30)
+      .map(r => reviewView(r, names, tasks, comps))
+  };
+}
+
+function submitTaskReview(c, user, id, score, text) {
+  requireReviewer(c, user);
+  const r = readTable('TaskReviews').find(x => x.id === id && x.vesselId === c.vessel.id);
+  if (!r) throw new Error('Review request not found');
+  if (r.userId === user.id) throw new Error('You cannot review your own work');
+  if (r.status === 'reviewed' && r.reviewerId !== user.id) throw new Error('Another reviewer already reviewed this work');
+  score = Math.round(Number(score));
+  if (!(score >= 1 && score <= 10)) throw new Error('Choose a score from 1 to 10');
+  const first = r.status !== 'reviewed';
+  r.status = 'reviewed'; r.reviewerId = user.id; r.score = String(score); r.text = clip(text, 1000); r.reviewedAt = nowIso();
+  update('TaskReviews', r._row, r);
+  audit(user.id, 'reviewWork', r.taskId, userName(r.userId) + ': ' + score + '/10', c.vessel.id);
+  if (first && CONFIG.REVIEW_EMAILS) {
+    const crew = readTable('Users').find(u => u.id === r.userId);
+    const t = readTable('Tasks').find(k => k.id === r.taskId) || {};
+    if (crew && isTrue(crew.active)) {
+      sendMail(crew.email, 'Your work was reviewed: ' + score + '/10',
+        '<p>' + esc(user.name) + ' reviewed your work on <b>' + esc(t.title || '') + '</b> (' + esc(c.vessel.name) + ').</p>' +
+        '<p style="font-size:22px;font-weight:bold">' + score + ' / 10</p>' + (r.text ? '<p><i>' + esc(r.text) + '</i></p>' : '') +
+        '<p>It is now part of your CJM Marine record.</p>' + appLink());
+    }
+  }
+  return listTaskReviews(c, user);
+}
+
+function skipTaskReview(c, user, id) {
+  requireReviewer(c, user);
+  const r = readTable('TaskReviews').find(x => x.id === id && x.vesselId === c.vessel.id && x.status === 'requested');
+  if (!r) throw new Error('Review request not found');
+  if (r.userId === user.id) throw new Error('You cannot close your own request');
+  r.status = 'skipped'; r.reviewerId = user.id; r.reviewedAt = nowIso();
+  update('TaskReviews', r._row, r);
+  audit(user.id, 'skipReview', r.taskId, userName(r.userId), c.vessel.id);
+  return listTaskReviews(c, user);
+}
+
+/** Reviewed work for a crew member. withNames=false hides reviewer names (public page). */
+function performanceOf(userId, withNames) {
+  const names = crewNames();
+  const tasks = {}; readTable('Tasks').forEach(t => tasks[t.id] = t);
+  const comps = {}; readTable('Completions').forEach(x => comps[x.id] = x);
+  const vessels = {}; readTable('Vessels').forEach(v => vessels[v.id] = v.name);
+  const ms = readTable('Memberships');
+  const roleOf = (uid, vid) => { const m = ms.find(x => x.userId === uid && x.vesselId === vid); return m ? positionOf(m.position) : 'Captain'; };
+  const items = readTable('TaskReviews').filter(r => r.userId === userId && r.status === 'reviewed')
+    .sort((a, b) => a.reviewedAt < b.reviewedAt ? 1 : -1)
+    .map(r => ({ date: (comps[r.completionId] || {}).performedDate || (r.reviewedAt || '').slice(0, 10),
+                 task: (tasks[r.taskId] || {}).title || '', system: (tasks[r.taskId] || {}).system || '',
+                 vesselName: vessels[r.vesselId] || '', score: Number(r.score), text: r.text,
+                 by: roleOf(r.reviewerId, r.vesselId) + (withNames && names[r.reviewerId] ? ' ' + names[r.reviewerId] : '') }));
+  const avg = items.length ? items.reduce((s, x) => s + x.score, 0) / items.length : 0;
+  return { average: Math.round(avg * 10) / 10, count: items.length, items };
+}
+
+// ───────────────────────── CREW RECORD BACKUP (weekly, per person) ─────────────────────────
+function seaTime(userId) {
+  return vesselHistory(userId).map(v => Object.assign({}, v, {
+    days: v.from ? Math.max(0, daysBetween(v.from, v.to || today())) : 0 }));
+}
+
+function fmtDays(d) {
+  if (d < 31) return d + ' days';
+  const months = Math.round(d / 30.44);
+  return months < 12 ? months + ' months' : (Math.floor(months / 12) + ' yr' + (months % 12 ? ' ' + (months % 12) + ' mo' : ''));
+}
+
+function buildCrewRecord(user, stamp) {
+  const p = profileOf(user.id) || {};
+  const sea = seaTime(user.id);
+  const certs = parseList(p.certifications);
+  const perf = performanceOf(user.id, true);
+  const stars = getStarsFor(user.id);
+  const tasks = {}; readTable('Tasks').forEach(t => tasks[t.id] = t);
+  const vessels = {}; readTable('Vessels').forEach(v => vessels[v.id] = v.name);
+  const since = addInterval(today(), -365, 'days');
+  const work = readTable('Completions').filter(x => x.performedBy === user.id && x.performedDate >= since && tasks[x.taskId])
+    .sort((a, b) => a.performedDate < b.performedDate ? 1 : -1)
+    .map(x => [x.performedDate, vessels[tasks[x.taskId].vesselId] || '', tasks[x.taskId].title, tasks[x.taskId].system, x.timing, x.notes]);
+  const totalDays = sea.reduce((s, v) => s + v.days, 0);
+
+  const ss = SpreadsheetApp.create(user.name + ' CJM Marine record ' + stamp);
+  const tabs = [
+    ['Profile', ['Field', 'Value'], [
+      ['Name', user.name], ['Email', user.email], ['Phone', p.phone || ''], ['Headline', p.headline || ''],
+      ['Based in', p.location || ''], ['Years at sea', p.yearsExperience || ''], ['Languages', p.languages || ''],
+      ['Availability', p.availability || ''], ['Sea time on CJM Marine', fmtDays(totalDays)],
+      ['Work reviews', perf.count ? perf.average + ' / 10 average from ' + perf.count : 'None yet'],
+      ['Captain recommendations', stars.count ? stars.average + ' / 5 from ' + stars.count : 'None yet'],
+      ['About', p.bio || ''], ['Record date', stamp]]],
+    ['Sea time', ['Vessel', 'Type', 'Length', 'Position', 'From', 'To', 'Days aboard', 'Time aboard'],
+      sea.map(v => [v.vesselName, v.vesselType, v.length, v.position, v.from, v.current ? 'Present' : v.to, String(v.days), fmtDays(v.days)])
+        .concat(parseList(p.experience).map(x => [x.vessel, '', '', x.position, '', '', '', x.years + ' (self-reported)']))],
+    ['Certifications', ['Certificate', 'Expires', 'Status'],
+      certs.map(x => [x.name, x.expires, !x.expires ? 'No expiry' : x.expires < today() ? 'EXPIRED' :
+                      daysBetween(today(), x.expires) <= 90 ? 'Expires within 90 days' : 'Valid'])],
+    ['Work reviews', ['Work date', 'Vessel', 'Task', 'System', 'Score (1-10)', 'Review', 'Reviewed by'],
+      perf.items.map(x => [x.date, x.vesselName, x.task, x.system, String(x.score), x.text, x.by])],
+    ['Recommendations', ['Date', 'Vessel', 'Stars (1-5)', 'Review', 'Reviewed by'],
+      stars.items.map(x => [x.date, x.vesselName, String(x.rating), x.text, x.by])],
+    ['Work log (12 months)', ['Date', 'Vessel', 'Task', 'System', 'Timing', 'Notes'], work]
+  ];
+  tabs.forEach((tab, i) => {
+    const sh = i === 0 ? ss.getSheets()[0].setName(tab[0]) : ss.insertSheet(tab[0]);
+    const width = tab[1].length;
+    const rows = [tab[1]].concat(tab[2].length ? tab[2] : [['None yet']]);
+    const grid = rows.map(r => { const x = r.map(v => v == null ? '' : String(v)); while (x.length < width) x.push(''); return x.slice(0, width); });
+    sh.getRange(1, 1, grid.length, width).setNumberFormat('@').setValues(grid);
+    sh.getRange(1, 1, 1, width).setFontWeight('bold').setBackground('#12324a').setFontColor('#ffffff');
+    sh.setFrozenRows(1);
+    sh.autoResizeColumns(1, width);
+  });
+  const root = backupFolder(null);
+  const crewRoot = (() => { const it = root.getFoldersByName('Crew records'); return it.hasNext() ? it.next() : root.createFolder('Crew records'); })();
+  const label = user.name + ' (' + user.email + ')';
+  const folder = (() => { const it = crewRoot.getFoldersByName(label); return it.hasNext() ? it.next() : crewRoot.createFolder(label); })();
+  DriveApp.getFileById(ss.getId()).moveTo(folder);
+  return { id: ss.getId(), url: ss.getUrl(), folder,
+           counts: { vessels: sea.length, days: totalDays, certs: certs.length, reviews: perf.count, average: perf.average,
+                     expired: certs.filter(x => x.expires && x.expires < today()).length } };
+}
+
+function getStarsFor(userId) {
+  const vessels = {}; readTable('Vessels').forEach(v => vessels[v.id] = v.name);
+  const names = crewNames();
+  const items = readTable('Reviews').filter(r => r.userId === userId)
+    .sort((a, b) => a.createdAt < b.createdAt ? 1 : -1)
+    .map(r => ({ date: (r.createdAt || '').slice(0, 10), vesselName: vessels[r.vesselId] || '', rating: Number(r.rating),
+                 text: r.text, by: names[r.reviewerId] || '' }));
+  const avg = items.length ? items.reduce((s, x) => s + x.rating, 0) / items.length : 0;
+  return { average: Math.round(avg * 10) / 10, count: items.length, items };
+}
+
+function sendCrewRecord(user) {
+  const stamp = today();
+  const file = buildCrewRecord(user, stamp);
+  shareFolder(file.folder, [user.email]);
+  const xlsx = exportXlsx(file.id, user.name.replace(/[^\w]+/g, '-') + '-record-' + stamp + '.xlsx');
+  const c = file.counts;
+  const sent = sendMail(user.email, 'Your ' + CONFIG.APP_NAME + ' record, ' + stamp,
+    '<p>Hello ' + esc(user.name.split(' ')[0]) + ',</p>' +
+    '<p>Here is your crew record: sea time, certifications, work reviews and recommendations. Keep it for your files.</p>' +
+    '<ul><li>' + c.vessels + ' vessel' + (c.vessels === 1 ? '' : 's') + ', ' + fmtDays(c.days) + ' aboard on CJM Marine</li>' +
+    '<li>' + c.certs + ' certification' + (c.certs === 1 ? '' : 's') + (c.expired ? ' (<b style="color:#b8322a">' + c.expired + ' expired</b>)' : '') + '</li>' +
+    '<li>' + (c.reviews ? c.reviews + ' work review' + (c.reviews === 1 ? '' : 's') + ', ' + c.average + ' / 10 average' : 'No work reviews yet') + '</li></ul>' +
+    '<p><a href="' + file.url + '">Open in Google Sheets</a></p>' +
+    '<p style="color:#666">An Excel copy is attached. It opens in Google Sheets, Excel or Numbers even if the website is down.</p>' + appLink(),
+    xlsx ? [xlsx] : []);
+  PropertiesService.getScriptProperties().setProperty('cr_' + user.id, stamp);
+  return { ok: sent, url: file.url };
+}
+
+function hasCrewRecord(u, profiles, memberIds) {
+  return isTrue(u.active) && u.passwordHash && (profiles[u.id] || memberIds[u.id]);
+}
+
+/** Daily trigger. Sends each crew member their record when it is CREW_RECORD_EVERY_DAYS old. */
+function crewRecordBackups() {
+  const props = PropertiesService.getScriptProperties();
+  const profiles = {}; readTable('Profiles').forEach(p => profiles[p.userId] = 1);
+  const memberIds = {}; readTable('Memberships').forEach(m => { if (m.status === 'active' || m.status === 'left') memberIds[m.userId] = 1; });
+  const due = readTable('Users').filter(u => hasCrewRecord(u, profiles, memberIds)).filter(u => {
+    const last = props.getProperty('cr_' + u.id);
+    return !last || daysBetween(last, today()) >= CONFIG.CREW_RECORD_EVERY_DAYS;
+  }).slice(0, CONFIG.CREW_RECORD_PER_RUN);
+  due.forEach(u => { try { sendCrewRecord(u); } catch (e) { Logger.log('Crew record failed for ' + u.email + ': ' + e.message); } });
+  return { sent: due.length };
+}
+
+function emailMyRecord(user) {
+  const cache = CacheService.getScriptCache();
+  if (cache.get('mr_' + user.id)) throw new Error('Your record was just sent. Check your inbox; you can send it again in an hour.');
+  cache.put('mr_' + user.id, '1', 3600);
+  const r = sendCrewRecord(user);
+  audit(user.id, 'emailRecord', '', '', '');
+  return { ok: true, url: r.url, message: 'Your record is on its way to ' + user.email + '.' };
 }
 
 // ───────────────────────── PLATFORM ADMIN ─────────────────────────
@@ -1006,12 +1318,24 @@ function getTask(c, user, id) {
   const t = taskIn(c, id);
   const notes = readTable('Notes').filter(n => n.taskId === id)
     .map(n => ({ id: n.id, text: n.text, createdAt: n.createdAt, by: names[n.userId] || n.userId }));
+  const reviews = {};
+  readTable('TaskReviews').filter(r => r.taskId === id).forEach(r => reviews[r.completionId] = r);
+  const hasReviewer = vesselReviewers(c.vessel.id, user.id).length > 0;
+  const oldest = addInterval(today(), -CONFIG.REVIEW_REQUEST_DAYS, 'days');
+  const canSee = (x) => x.performedBy === user.id || isVesselReviewer(c.vessel.id, user.id);
   const completions = readTable('Completions').filter(x => x.taskId === id)
-    .map(x => ({ dueDate: x.dueDate, performedDate: x.performedDate, timing: x.timing,
-                 notes: x.notes, by: names[x.performedBy] || x.performedBy, loggedAt: x.loggedAt }));
+    .map(x => {
+      const r = reviews[x.id];
+      return { id: x.id, dueDate: x.dueDate, performedDate: x.performedDate, timing: x.timing,
+               notes: x.notes, by: names[x.performedBy] || x.performedBy, loggedAt: x.loggedAt,
+               mine: x.performedBy === user.id,
+               review: r && canSee(x) ? { status: r.status, score: r.status === 'reviewed' ? Number(r.score) : null,
+                                          text: r.status === 'reviewed' ? r.text : '' } : (r ? { status: 'private' } : null),
+               canRequestReview: !r && x.performedBy === user.id && hasReviewer && x.performedDate >= oldest };
+    });
   const history = readTable('Audit').filter(a => a.taskId === id)
     .map(a => ({ timestamp: a.timestamp, action: a.action, details: a.details, by: names[a.userId] || a.userId }));
-  return { ok: true, task: decorate(c, t, names, user), notes, completions, history };
+  return { ok: true, task: decorate(c, t, names, user), notes, completions, history, canRequestReview: hasReviewer };
 }
 
 function crewOnVessel(c, userId) {
@@ -1083,8 +1407,9 @@ function completeTask(c, user, req) {
     const late = daysBetween(t.dueDate, performed);
     timing = late > 0 ? 'Late by ' + late + 'd' : 'On time';
   }
+  const completionId = newId('X');
   insert('Completions', {
-    id: newId('X'), taskId: t.id, dueDate: t.dueDate, performedDate: performed,
+    id: completionId, taskId: t.id, dueDate: t.dueDate, performedDate: performed,
     performedBy: user.id, timing, notes: clip(req.notes, 2000), loggedAt: nowIso()
   });
   const oldDue = t.dueDate;
@@ -1107,7 +1432,11 @@ function completeTask(c, user, req) {
   update('Tasks', t._row, t);
   audit(user.id, 'complete', t.id, detail, c.vessel.id);
   if (req.notes) addNote(c, user, t.id, req.notes);
-  return { ok: true, task: decorate(c, t, crewNames(), user) };
+  let reviewRequested = false;
+  if (req.requestReview) {
+    try { requestTaskReview(c, user, completionId, req.reviewMessage, false); reviewRequested = true; } catch (e) { /* no reviewer on board */ }
+  }
+  return { ok: true, task: decorate(c, t, crewNames(), user), reviewRequested };
 }
 
 function addNote(c, user, taskId, text) {
@@ -1227,6 +1556,183 @@ function dailyReminders() {
   }
 }
 
+// ───────────────────────── DAILY GOOGLE SHEETS BACKUP ─────────────────────────
+/**
+ * Run once from the Apps Script editor after upgrading to 2.1:
+ * approves the new Drive permissions, installs the daily backup, and sends a first backup now.
+ */
+function setupBackups() {
+  installDailyTrigger();
+  const r = runBackups();
+  Logger.log('Backups sent for ' + r.vessels + ' vessel(s). Files are in Drive → "' + CONFIG.BACKUP_FOLDER + '".');
+  const c = crewRecordBackups();
+  Logger.log('Crew records sent: ' + c.sent + ' (each crew member gets theirs every ' + CONFIG.CREW_RECORD_EVERY_DAYS + ' days).');
+  return r;
+}
+
+/** Daily trigger. One Google Sheet per vessel, emailed to its Captain(s); one combined email to CJM admins. */
+function dailyBackups() {
+  runBackups();
+  try { crewRecordBackups(); } catch (e) { Logger.log('Crew records: ' + e.message); }
+}
+
+function runBackups(onlyVesselId) {
+  const users = {};
+  readTable('Users').forEach(u => users[u.id] = u);
+  const admins = Object.keys(users).map(k => users[k]).filter(u => isTrue(u.isAdmin) && isTrue(u.active)).map(u => u.email);
+  const members = readTable('Memberships').filter(m => m.status === 'active');
+  const vessels = readTable('Vessels').filter(v => isTrue(v.active) && (!onlyVesselId || v.id === onlyVesselId));
+  const stamp = today();
+  const root = backupFolder(null);
+  const forAdmin = [];
+
+  vessels.forEach(v => {
+    const file = buildBackupSheet(v, users, stamp, root);
+    const xlsx = exportXlsx(file.id, v.name + ' backup ' + stamp + '.xlsx');
+    const to = members.filter(m => m.vesselId === v.id && CONFIG.BACKUP_TO.indexOf(positionOf(m.position)) !== -1 &&
+                                   users[m.userId] && isTrue(users[m.userId].active))
+      .map(m => users[m.userId].email).filter(e => admins.indexOf(e) === -1);
+    shareFolder(file.folder, to);
+    if (to.length) {
+      sendMail(to.join(','), v.name + ' maintenance backup ' + stamp,
+        backupSummaryHtml(v, file) + '<p><a href="' + file.url + '">Open in Google Sheets</a></p>' +
+        '<p style="color:#666">An Excel copy is attached for offline use.</p>' + appLink(), xlsx ? [xlsx] : []);
+    }
+    forAdmin.push({ v, file, xlsx });
+  });
+
+  if (admins.length && forAdmin.length) {
+    sendMail(admins.join(','), CONFIG.APP_NAME + ' daily backup ' + stamp + ' (' + forAdmin.length + ' vessel' + (forAdmin.length > 1 ? 's' : '') + ')',
+      forAdmin.map(x => backupSummaryHtml(x.v, x.file) + '<p><a href="' + x.file.url + '">Open ' + esc(x.v.name) + ' in Google Sheets</a></p>').join('<hr>') +
+      '<p style="color:#666">Excel copies are attached. All backups are in your Google Drive folder "' + esc(CONFIG.BACKUP_FOLDER) + '".</p>',
+      forAdmin.map(x => x.xlsx).filter(Boolean));
+  }
+  cleanupBackups(root);
+  return { ok: true, vessels: forAdmin.length,
+           files: forAdmin.map(x => ({ vessel: x.v.name, url: x.file.url, counts: x.file.counts })) };
+}
+
+function sendBackupNow(user, vesselId) {
+  const r = runBackups(vesselId || '');
+  audit(user.id, 'sendBackup', '', r.vessels + ' vessel(s)', vesselId || '');
+  return r;
+}
+
+function backupFolder(vessel) {
+  const name = CONFIG.BACKUP_FOLDER;
+  const it = DriveApp.getFoldersByName(name);
+  const root = it.hasNext() ? it.next() : DriveApp.createFolder(name);
+  if (!vessel) return root;
+  const sub = root.getFoldersByName(vessel.name);
+  return sub.hasNext() ? sub.next() : root.createFolder(vessel.name);
+}
+
+function shareFolder(folder, emails) {
+  if (!emails.length) return;
+  let have = [];
+  try { have = folder.getViewers().concat(folder.getEditors()).map(u => String(u.getEmail()).toLowerCase()); } catch (e) {}
+  emails.filter(e => have.indexOf(e.toLowerCase()) === -1).forEach(e => {
+    try { folder.addViewer(e); } catch (err) { Logger.log('Could not share backups with ' + e + ': ' + err.message); }
+  });
+}
+
+function buildBackupSheet(v, users, stamp, root) {
+  const name = (u) => (users[u] ? users[u].name : '');
+  const tasks = readTable('Tasks').filter(t => t.vesselId === v.id);
+  const open = tasks.filter(t => t.state === 'Open');
+  const notes = readTable('Notes');
+  const lastNote = {};
+  notes.forEach(n => { if (!lastNote[n.taskId] || lastNote[n.taskId].createdAt < n.createdAt) lastNote[n.taskId] = n; });
+  const label = { red: 'Overdue', amber: 'Due soon', green: 'On schedule', none: 'Open', done: 'Closed' };
+  const every = (t) => isTrue(t.recurring) ? 'Every ' + t.intervalValue + ' ' + t.intervalUnit : 'One-time';
+  const days = (t) => t.dueDate ? daysBetween(today(), t.dueDate) : '';
+
+  const routine = open.filter(t => t.type !== 'Issue')
+    .sort((a, b) => (a.dueDate || '9999') < (b.dueDate || '9999') ? -1 : 1)
+    .map(t => [label[colorFor(t)], t.title, t.system, t.dueDate, t.dueTime, days(t), every(t), name(t.assignedTo),
+               t.lastPerformed, name(t.lastPerformedBy), t.description]);
+  const issues = open.filter(t => t.type === 'Issue')
+    .sort((a, b) => a.createdAt < b.createdAt ? -1 : 1)
+    .map(t => [label[colorFor(t)], t.title, t.system, (t.createdAt || '').slice(0, 10), name(t.createdBy), name(t.assignedTo),
+               t.dueDate, t.description, lastNote[t.id] ? lastNote[t.id].text : '', lastNote[t.id] ? (lastNote[t.id].createdAt || '').slice(0, 10) : '']);
+  const ids = {};
+  tasks.forEach(t => ids[t.id] = t);
+  const since = addInterval(today(), -30, 'days');
+  const signoffs = readTable('Completions').filter(c => ids[c.taskId] && c.performedDate >= since)
+    .sort((a, b) => a.performedDate < b.performedDate ? 1 : -1)
+    .map(c => [c.performedDate, ids[c.taskId].title, ids[c.taskId].system, c.dueDate, c.timing, name(c.performedBy), c.notes]);
+
+  const ss = SpreadsheetApp.create(v.name + ' backup ' + stamp);
+  const tabs = [
+    ['Open tasks', ['Status', 'Task', 'System', 'Due date', 'Due time', 'Days to due', 'Schedule', 'Assigned to', 'Last done', 'Last done by', 'Description'], routine, 0],
+    ['Open issues', ['Status', 'Issue', 'System', 'Reported', 'Reported by', 'Assigned to', 'Fix by', 'Description', 'Latest note', 'Note date'], issues, 0],
+    ['Sign-offs (30 days)', ['Performed', 'Task', 'System', 'Was due', 'Timing', 'By', 'Notes'], signoffs, -1]
+  ];
+  const fills = { 'Overdue': '#f6d5d2', 'Due soon': '#fbecc6', 'On schedule': '#dcefdf', 'Open': '#e6e1f3' };
+  tabs.forEach((tab, i) => {
+    const sh = i === 0 ? ss.getSheets()[0].setName(tab[0]) : ss.insertSheet(tab[0]);
+    const rows = [tab[1]].concat(tab[2].length ? tab[2] : [[tab[2] === signoffs ? 'No sign-offs in the last 30 days' : 'None']]);
+    const width = tab[1].length;
+    const grid = rows.map(r => { const x = r.map(c => c === undefined || c === null ? '' : String(c)); while (x.length < width) x.push(''); return x.slice(0, width); });
+    sh.getRange(1, 1, grid.length, width).setNumberFormat('@').setValues(grid);
+    sh.getRange(1, 1, 1, width).setFontWeight('bold').setBackground('#12324a').setFontColor('#ffffff');
+    sh.setFrozenRows(1);
+    if (tab[3] === 0 && tab[2].length) {
+      sh.getRange(2, 1, tab[2].length, 1).setBackgrounds(tab[2].map(r => [fills[r[0]] || '#ffffff']));
+    }
+    sh.autoResizeColumns(1, width);
+  });
+  const info = ss.insertSheet('About', 0);
+  info.getRange(1, 1, 6, 2).setValues([
+    ['Vessel', v.name], ['Backup date', stamp], ['Open tasks', String(routine.length)],
+    ['Open issues', String(issues.length)], ['Overdue', String(open.filter(t => colorFor(t) === 'red').length)],
+    ['Source', CONFIG.APP_NAME + (CONFIG.APP_URL ? ' ' + CONFIG.APP_URL : '')]]);
+  info.getRange(1, 1, 6, 1).setFontWeight('bold');
+  info.autoResizeColumns(1, 2);
+
+  const file = DriveApp.getFileById(ss.getId());
+  const folder = backupFolder(v);
+  file.moveTo(folder);
+  return { id: ss.getId(), url: ss.getUrl(), folder,
+           counts: { tasks: routine.length, issues: issues.length, overdue: open.filter(t => colorFor(t) === 'red').length, signoffs: signoffs.length } };
+}
+
+function exportXlsx(id, filename) {
+  try {
+    SpreadsheetApp.flush();
+    const res = UrlFetchApp.fetch('https://docs.google.com/spreadsheets/d/' + id + '/export?format=xlsx',
+      { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) return null;
+    return res.getBlob().setName(filename);
+  } catch (e) {
+    Logger.log('Excel export failed: ' + e.message);
+    return null;
+  }
+}
+
+function backupSummaryHtml(v, file) {
+  const c = file.counts;
+  return '<h3 style="margin:0 0 6px">' + esc(v.name) + '</h3>' +
+    '<p style="margin:0">' + c.tasks + ' open tasks, ' + c.issues + ' open issues, ' +
+    (c.overdue ? '<b style="color:#b8322a">' + c.overdue + ' overdue</b>' : '0 overdue') + ', ' +
+    c.signoffs + ' sign-offs in the last 30 days.</p>';
+}
+
+function cleanupBackups(folder, depth) {
+  depth = depth || 0;
+  const cutoff = new Date(Date.now() - CONFIG.BACKUP_KEEP_DAYS * 86400000);
+  if (depth > 0) {
+    const files = folder.getFiles();
+    while (files.hasNext()) {
+      const f = files.next();
+      if (f.getDateCreated() < cutoff) f.setTrashed(true);
+    }
+  }
+  if (depth >= 3) return;
+  const subs = folder.getFolders();
+  while (subs.hasNext()) cleanupBackups(subs.next(), depth + 1);
+}
+
 // ───────────────────────── AUDIT / MAIL ─────────────────────────
 function audit(userId, action, taskId, details, vesselId) {
   insert('Audit', { timestamp: nowIso(), userId, action, taskId, details, vesselId: vesselId || '' });
@@ -1236,9 +1742,9 @@ function appLink() {
   return CONFIG.APP_URL ? '<p><a href="' + CONFIG.APP_URL + '">Open ' + esc(CONFIG.APP_NAME) + '</a></p>' : '';
 }
 
-function sendMail(to, subject, html) {
+function sendMail(to, subject, html, attachments) {
   try {
-    MailApp.sendEmail({ to, subject, name: CONFIG.APP_NAME,
+    MailApp.sendEmail({ to, subject, name: CONFIG.APP_NAME, attachments: attachments || [],
       htmlBody: '<div style="font-family:Arial,sans-serif;color:#12324a">' + html + '</div>' });
     return true;
   } catch (e) {
@@ -1250,9 +1756,24 @@ function sendMail(to, subject, html) {
 // ───────────────────────── SHEET HELPERS ─────────────────────────
 const TABLE_CACHE = {}; // lives for one request only
 
+const HEADERS_CHECKED = {};
+
+const AUTO_TABS = ['TaskReviews'];
+
 function sheet(name) {
-  const sh = SpreadsheetApp.getActive().getSheetByName(name);
+  let sh = SpreadsheetApp.getActive().getSheetByName(name);
+  if (!sh && AUTO_TABS.indexOf(name) !== -1) {
+    sh = SpreadsheetApp.getActive().insertSheet(name);
+    sh.getRange('A:Z').setNumberFormat('@');
+    sh.setFrozenRows(1);
+  }
   if (!sh) throw new Error('Missing tab "' + name + '". Run setupPlatform() in Apps Script.');
+  if (!HEADERS_CHECKED[name] && SHEETS[name]) {
+    HEADERS_CHECKED[name] = true;
+    const want = SHEETS[name];
+    const have = sh.getRange(1, 1, 1, want.length).getValues()[0];
+    if (want.some((h, i) => have[i] !== h)) sh.getRange(1, 1, 1, want.length).setValues([want]).setFontWeight('bold');
+  }
   return sh;
 }
 

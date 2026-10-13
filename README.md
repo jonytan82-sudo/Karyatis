@@ -1,4 +1,4 @@
-# CJM Marine 
+# CJM Marine
 
 Vessel maintenance and crew platform from the CJM marine division.
 React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
@@ -9,6 +9,10 @@ React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
 - **Crew profiles**: photo, headline, certifications with expiry, experience, availability, and a business card (.vcf download and print).
 - **Find crew**: Owners and Captains search all crew by free text, position and availability.
 - **Reviews**: Owners and Captains rate crew who served on their vessel. Crew see their own reviews.
+- **Business card QR codes**: the back of the card has a "Save contact" code (vCard) and a "Read my reviews" code. The reviews page needs no login and hides reviewer names. Crew turn it on in My profile.
+- **Work reviews**: after signing off a task, crew can ask the Captain to review that work (1 to 10 plus a comment). Reviewing is optional; the Captain can skip. Scores stay on the crew member's record across boats and show on their profile, in Find crew and on the QR reviews page.
+- **Crew record backup**: every 7 days each crew member is emailed a Google Sheet of their sea time per vessel, certifications, work reviews, recommendations and 12-month work log, with an Excel copy. They can also send it any time from My profile.
+- **Daily backup**: each morning every vessel's open tasks, open issues and 30 days of sign-offs become a Google Sheet in Drive → "CJM Marine backups". Captains get their vessel's sheet by email with an Excel copy attached. CJM admins get one email covering all vessels.
 
 ## Upgrade from the single-vessel Karyatis version
 
@@ -22,6 +26,20 @@ React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
    Who has access must be **Anyone**. If the URL contains `/a/macros/<your-domain>/`, access is limited to your company domain and crew cannot log in.
 4. **GitHub**: upload everything in this folder to the repo (top level, not inside `src`) and commit. Netlify rebuilds on its own.
 5. **Check**: log in and open **CJM admin**. The bottom of the page should say `Google Script version: 2.0 (CJM Marine multi-vessel)`.
+
+## Upgrade to 2.1 (QR codes and daily backups)
+1. Paste the new `apps-script/Code.gs` into Apps Script and save.
+2. Choose `setupBackups` in the function menu and click Run. Approve the new Google Drive permission. This installs the daily backup and emails a first backup right away.
+3. Deploy → Manage deployments → pencil → New version → Deploy.
+4. Upload this folder to GitHub (Netlify rebuilds on its own).
+5. CJM admin tab should show `Google Script version: 2.1 (QR business cards, daily backups)`.
+
+## Upgrade to 2.2 (work reviews, crew records)
+1. Paste the new `apps-script/Code.gs` into Apps Script and save. The TaskReviews tab is created automatically.
+2. Optional: run `setupBackups` again to send everyone their first crew record now. Otherwise it starts with the next morning's backup.
+3. Deploy → Manage deployments → pencil → New version → Deploy.
+4. Upload this folder to GitHub.
+5. CJM admin tab should show `Google Script version: 2.2 (work reviews, crew record backups)`.
 
 ## Fresh install
 Same as above on a new, empty Google Sheet. `setupPlatform()` creates the tabs and your admin account. Then create vessels from the CJM admin tab.
