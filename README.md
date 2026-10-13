@@ -10,6 +10,7 @@ React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
 - **Find crew**: Owners and Captains search all crew by free text, position and availability.
 - **Reviews**: Owners and Captains rate crew who served on their vessel. Crew see their own reviews.
 - **Business card QR codes**: the back of the card has a "Save contact" code (vCard) and a "Read my reviews" code. The reviews page needs no login and hides reviewer names. Crew turn it on in My profile.
+- **Titles and access levels**: 39 job titles in 7 groups from the CJM Marine Crew Role Reference. A title is descriptive only. What someone can do comes from their access level (Command, Owner oversight, Department lead, Qualified crew, Supervised crew, External contractor, View only) and departments (deck, engineering, interior, galley, medical, security), set by the Captain. Contractors see only jobs assigned to them and earn no sea time.
 - **Work reviews**: after signing off a task, crew can ask the Captain to review that work (1 to 10 plus a comment). Reviewing is optional; the Captain can skip. Scores stay on the crew member's record across boats and show on their profile, in Find crew and on the QR reviews page.
 - **Crew record backup**: every 7 days each crew member is emailed a Google Sheet of their sea time per vessel, certifications, work reviews, recommendations and 12-month work log, with an Excel copy. They can also send it any time from My profile.
 - **Daily backup**: each morning every vessel's open tasks, open issues and 30 days of sign-offs become a Google Sheet in Drive → "CJM Marine backups". Captains get their vessel's sheet by email with an Excel copy attached. CJM admins get one email covering all vessels.
@@ -41,10 +42,17 @@ React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
 4. Upload this folder to GitHub.
 5. CJM admin tab should show `Google Script version: 2.2 (work reviews, crew record backups)`.
 
+## Upgrade to 2.3 (titles and access levels)
+1. Paste the new `apps-script/Code.gs` into Apps Script and save. New columns are added automatically; no setup to run.
+2. Deploy → Manage deployments → pencil → New version → Deploy.
+3. Upload this folder to GitHub.
+4. Existing crew keep exactly the rights they had (old Captain → Command, Owner → Owner oversight, Chief Engineer → Department lead for all departments, Engineer → lead engineering, Bosun → lead deck, Interior → qualified interior and galley, Deckhand → supervised).
+5. CJM admin tab should show `Google Script version: 2.3 (crew titles and access levels)`.
+
 ## Fresh install
 Same as above on a new, empty Google Sheet. `setupPlatform()` creates the tabs and your admin account. Then create vessels from the CJM admin tab.
 
 ## Where things live
-- Positions and their rights: `POSITIONS` and `DEPARTMENTS` at the top of `apps-script/Code.gs`.
+- Job titles, access levels and departments: `TITLE_LIST`, `ACCESS` and `DEPARTMENTS` near the top of `apps-script/Code.gs`.
 - Reminder timing and colors: `CONFIG` in `apps-script/Code.gs`.
 - After any change to `Code.gs`: Deploy → Manage deployments → Edit → **New version**.

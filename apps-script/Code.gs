@@ -14,7 +14,7 @@
  *                body: JSON.stringify({ action, token, vesselId, ... }) })
  */
 
-const SCRIPT_VERSION = '2.2 (work reviews, crew record backups)';
+const SCRIPT_VERSION = '2.3 (crew titles and access levels)';
 
 // ───────────────────────── CONFIG ─────────────────────────
 const CONFIG = {
@@ -28,7 +28,7 @@ const CONFIG = {
   SETUP_LINK_DAYS: 7,          // how long an account setup link works
   DIGEST_HOUR: 7,              // hour (script time zone) the daily reminder runs
   BACKUP_HOUR: 5,              // hour the daily Google Sheets backup is emailed
-  BACKUP_TO: ['Captain'],      // vessel positions that get their vessel's backup (CJM admins always get all)
+  BACKUP_TO: ['command'],      // access levels that get their vessel's daily backup (CJM admins always get all)
   BACKUP_KEEP_DAYS: 30,        // older backup files are moved to the Drive trash
   BACKUP_FOLDER: 'CJM Marine backups',
   REVIEW_REQUEST_DAYS: 60,     // crew can ask for a review of work done in the last N days
@@ -43,7 +43,7 @@ const SHEETS = {
                 'phone', 'showContact', 'languages', 'certifications', 'experience', 'updatedAt',
                 'shareReviews', 'shareId'],
   Vessels:     ['id', 'name', 'type', 'length', 'homePort', 'active', 'createdAt', 'createdBy'],
-  Memberships: ['id', 'vesselId', 'userId', 'position', 'status', 'joinedAt', 'leftAt', 'invitedBy'],
+  Memberships: ['id', 'vesselId', 'userId', 'position', 'status', 'joinedAt', 'leftAt', 'invitedBy', 'access', 'departments'],
   Sessions:    ['token', 'userId', 'expiresAt'],
   Tokens:      ['token', 'userId', 'purpose', 'expiresAt', 'used'],
   Requests:    ['id', 'name', 'email', 'kind', 'position', 'vesselName', 'message', 'status',
@@ -63,35 +63,147 @@ const SHEETS = {
 // Membership.status: 'active' | 'invited' | 'left' | 'declined'
 // Task.type: 'Routine' | 'Issue'.  Task.state: 'Open' | 'Completed' | 'Resolved'
 
-// ───────────────────────── POSITIONS ─────────────────────────
+// ───────────────────────── ROLES: TITLE ≠ ACCESS ─────────────────────────
+// Per the CJM Marine Crew Role Reference: a job title is descriptive only. What someone can do in the
+// app comes from their ACCESS LEVEL and DEPARTMENTS, which the Captain sets separately.
+
+// Which department a maintenance system belongs to (for sign-off rights).
 const DEPARTMENTS = {
   'Main engines': 'engine', 'Generators': 'engine', 'Electrical': 'engine', 'Fuel': 'engine',
   'Plumbing & water': 'engine', 'HVAC': 'engine', 'Steering & stabilizers': 'engine',
-  'Navigation & electronics': 'engine',
-  'Hull & deck': 'deck', 'Tender & toys': 'deck', 'Safety equipment': 'deck',
-  'Galley': 'interior', 'Interior': 'interior',
+  'Navigation & electronics': 'engine', 'AV/IT & communications': 'engine',
+  'Hull & deck': 'deck', 'Tender & toys': 'deck', 'Safety equipment': 'deck', 'Dive & watersports': 'deck',
+  'Interior': 'interior', 'Galley': 'galley', 'Medical': 'medical', 'Security': 'security',
   'Other': 'any', '': 'any'
 };
+const DEPT_KEYS = ['deck', 'engine', 'interior', 'galley', 'medical', 'security'];
+const DEPT_LABELS = { deck: 'Deck', engine: 'Engineering', interior: 'Interior', galley: 'Galley', medical: 'Medical', security: 'Security' };
 
-// manageCrew: add/invite/remove crew and set positions on the vessel
-// createRoutine: schedule maintenance and assign crew
-// editAll: edit any task (otherwise: own department, or tasks they created)
-// depts: departments they can sign off ('all' = everything)
-// hires: can search the crew directory and review crew
-const POSITIONS = {
-  'Owner':          { manageCrew: true,  createRoutine: false, editAll: false, depts: [],           hires: true },
-  'Captain':        { manageCrew: true,  createRoutine: true,  editAll: true,  depts: 'all',        hires: true },
-  'Chief Engineer': { manageCrew: false, createRoutine: true,  editAll: true,  depts: 'all',        hires: false },
-  'Engineer':       { manageCrew: false, createRoutine: true,  editAll: false, depts: ['engine'],   hires: false },
-  'Bosun':          { manageCrew: false, createRoutine: true,  editAll: false, depts: ['deck'],     hires: false },
-  'Interior':       { manageCrew: false, createRoutine: false, editAll: false, depts: ['interior'], hires: false },
-  'Deckhand':       { manageCrew: false, createRoutine: false, editAll: false, depts: [],           hires: false }
+// What each access level allows. 'member' depts = the departments set on that person's membership.
+const ACCESS = {
+  command:    { label: 'Command',             rank: 1, manageCrew: true,  createRoutine: true,  editAll: true,  hires: true,  depts: 'all',
+                help: 'Full control of the vessel: crew and access, scheduling, editing and signing off any task, work reviews and hiring.' },
+  oversight:  { label: 'Owner oversight',     rank: 2, manageCrew: true,  createRoutine: false, editAll: false, hires: true,  depts: 'none',
+                help: 'Sees everything, manages crew and access, reports issues, reviews and hires crew. Does not schedule or sign off maintenance.' },
+  lead:       { label: 'Department lead',     rank: 3, manageCrew: false, createRoutine: true,  editAll: false, hires: false, depts: 'member',
+                help: 'Schedules, assigns, edits and signs off tasks in their departments.' },
+  qualified:  { label: 'Qualified crew',      rank: 4, manageCrew: false, createRoutine: false, editAll: false, hires: false, depts: 'member',
+                help: 'Signs off tasks in their departments and tasks assigned to them. Reports issues.' },
+  supervised: { label: 'Supervised crew',     rank: 5, manageCrew: false, createRoutine: false, editAll: false, hires: false, depts: 'none',
+                help: 'Signs off only tasks assigned to them. Reports issues.' },
+  contractor: { label: 'External contractor', rank: 6, manageCrew: false, createRoutine: false, editAll: false, hires: false, depts: 'none', contractor: true,
+                help: 'Sees and signs off only jobs assigned to them and records findings. Not vessel crew; no sea time.' },
+  viewonly:   { label: 'View only',           rank: 7, manageCrew: false, createRoutine: false, editAll: false, hires: false, depts: 'none', viewOnly: true,
+                help: 'Sees the maintenance program and adds notes. Cannot sign off or report issues.' }
 };
-const MANAGERS = ['Owner', 'Captain'];
 
-function positionOf(p) {
-  if (POSITIONS[p]) return p;
-  return p === 'admin' ? 'Captain' : 'Deckhand';
+// The 39 job titles from the Crew Role Reference, with the access a new member starts with.
+// [group, title, default access, default departments, description]
+const TITLE_LIST = [
+  ['Ownership & Command', 'Yacht Owner', 'oversight', [], 'Owns the vessel and sets operating priorities and budgets; appoints a captain or manager; approves major expenditures. Not ordinarily operating crew.'],
+  ['Ownership & Command', 'Yacht Manager (shore-based)', 'oversight', [], 'Represents the owner in administrative oversight; budgets, insurance, vendors, staffing, compliance support and refit planning with the captain.'],
+  ['Ownership & Command', 'Captain / Master', 'command', [], 'Overall responsibility for safe vessel operation: crew, navigation, emergency readiness, maintenance oversight, guest operations and documentation.'],
+  ['Ownership & Command', 'Staff Captain', 'command', [], 'On larger yachts, supports the master with daily operations, safety management, training and supervision of officers; may act as deputy.'],
+  ['Ownership & Command', 'Chief Officer / First Officer', 'lead', ['deck'], 'Leads deck operations and watches; deck maintenance, safety equipment, drills, passage preparations and deck crew assignments.'],
+  ['Ownership & Command', 'Second Officer', 'qualified', ['deck'], 'Navigation publications, charts, passage planning support, bridge watches, and assigned safety equipment and records.'],
+  ['Ownership & Command', 'Third Officer', 'qualified', ['deck'], 'Supports navigational watches, safety checks, drills, deck operations and assigned documentation under senior officers.'],
+  ['Deck', 'Bosun (Deck Supervisor)', 'lead', ['deck'], 'Supervises day-to-day deck work; exterior surfaces, tenders, mooring equipment, deck gear and work plans; trains deckhands.'],
+  ['Deck', 'Lead Deckhand', 'qualified', ['deck'], 'Coordinates hands-on deck tasks and supports the bosun; cleaning, line handling, tender preparation and junior crew.'],
+  ['Deck', 'Deckhand', 'supervised', [], 'Washdowns, polishing, line handling, lookout, tender support, equipment checks and guest water-activity setup within qualifications.'],
+  ['Deck', 'Junior Deckhand', 'supervised', [], 'Routine cleaning, maintenance, stores, mooring preparations and safe deck practices under supervision.'],
+  ['Deck', 'Deck Cadet / Trainee', 'supervised', [], 'Learns seamanship and vessel procedures; assists with watches and deck tasks as permitted and supervised; logs training.'],
+  ['Engineering', 'Chief Engineer', 'lead', ['engine'], 'Leads technical operations; machinery and engineering safety; preventive maintenance, technical records, spares, defects and the engineering team.'],
+  ['Engineering', 'Second Engineer', 'lead', ['engine'], 'Supports the chief engineer; performs and supervises machinery maintenance, troubleshooting, watchkeeping, spares and documentation.'],
+  ['Engineering', 'Third Engineer', 'qualified', ['engine'], 'Assigned maintenance and engine-room rounds; monitors machinery, records readings and reports defects to senior engineers.'],
+  ['Engineering', 'Electrical Technical Officer (ETO)', 'qualified', ['engine'], 'Electrical distribution, controls, alarms, automation, electronics and related technical systems within authorization.'],
+  ['Engineering', 'AV/IT Officer', 'qualified', ['engine'], 'Onboard networks, communications, entertainment, AV and IT systems; user access, backups and technical support.'],
+  ['Engineering', 'Engineer / Mechanic', 'qualified', ['engine'], 'Inspects, services, repairs and documents propulsion, generators, pumps, HVAC, plumbing and mechanical equipment as qualified.'],
+  ['Engineering', 'Junior Engineer', 'supervised', [], 'Rounds, routine servicing, cleaning, readings, spares and work documentation under senior engineering supervision.'],
+  ['Engineering', 'Engineering Cadet', 'supervised', [], 'Learns engineering procedures, safety, machinery systems, watchkeeping and supervised maintenance; keeps training records.'],
+  ['Interior', 'Purser', 'qualified', ['interior'], 'Crew and guest administration, accounts, purchasing, travel logistics, inventories and records, especially on larger yachts.'],
+  ['Interior', 'Chief Steward / Stewardess', 'lead', ['interior'], 'Leads interior service and housekeeping; guest service, standards, interior inventories, schedules and training.'],
+  ['Interior', 'Second Steward / Stewardess', 'qualified', ['interior'], 'Assists the chief steward; supervises sections of service, housekeeping, laundry, inventories and junior staff.'],
+  ['Interior', 'Third Steward / Stewardess', 'qualified', ['interior'], 'Guest service, cabin care, table service, laundry, cleaning and supply checks under interior supervision.'],
+  ['Interior', 'Steward / Stewardess', 'qualified', ['interior'], 'Housekeeping, guest hospitality, meal and beverage service, laundry, provisioning support and interior maintenance.'],
+  ['Interior', 'Junior Steward / Stewardess', 'supervised', [], 'Routine guest-area cleaning, laundry, setup, restocking and service duties while learning interior standards.'],
+  ['Interior', 'Laundry Steward / Housekeeper', 'qualified', ['interior'], 'Linen and garment care, washing, pressing, inventories, and cabin or interior cleanliness as assigned.'],
+  ['Galley', 'Executive Chef / Head Chef', 'lead', ['galley'], 'Menus, provisioning, dietary requirements, food safety, galley costs, kitchen operations and galley staff.'],
+  ['Galley', 'Sous Chef', 'qualified', ['galley'], 'Assists the head chef with preparation, supervision, food safety, stock rotation and service; may lead the galley when delegated.'],
+  ['Galley', 'Crew Chef', 'qualified', ['galley'], 'Plans and prepares daily crew meals; associated provisioning, dietary needs, sanitation and stock.'],
+  ['Galley', 'Galley Assistant', 'supervised', [], 'Food preparation, cleaning, dishwashing, stores, hygiene and basic kitchen tasks under supervision.'],
+  ['Combined & Specialist', 'Deck/Engineer', 'qualified', ['deck', 'engine'], 'Deck operations plus authorized mechanical and technical maintenance, depending on qualifications and staffing.'],
+  ['Combined & Specialist', 'Deck/Steward', 'qualified', ['deck', 'interior'], 'Deck and interior duties: cleaning, hospitality, line handling and guest preparation as assigned.'],
+  ['Combined & Specialist', 'Sole Engineer', 'lead', ['engine'], 'Principal onboard engineer on smaller yachts; machinery operation, maintenance planning, repairs and technical logs.'],
+  ['Combined & Specialist', 'Dive Instructor / Dive Master', 'qualified', ['deck'], 'Plans and supervises diving within qualifications; inspects dive equipment, assesses conditions, supports emergency preparedness.'],
+  ['Combined & Specialist', 'Watersports Instructor', 'qualified', ['deck'], 'Prepares and supervises approved water activities; checks equipment and guest readiness; follows vessel safety procedures.'],
+  ['Combined & Specialist', 'Medic / Nurse', 'qualified', ['medical'], 'Clinical support within professional scope; medical supplies and records; emergency response and crew wellness.'],
+  ['Combined & Specialist', 'Security Officer', 'qualified', ['security'], 'Vessel and guest security, access control, risk assessments, security drills and incident reporting under vessel policy.'],
+  ['External', 'Independent Contractor / External Technician', 'contractor', [], 'Works for their own company; performs separately authorized jobs, records findings and work, and signs their own task entries. Not crew.']
+];
+const TITLES = {};
+TITLE_LIST.forEach(t => TITLES[t[1]] = { group: t[0], access: t[2], depts: t[3], help: t[4] });
+
+// Positions used before the Crew Role Reference: title + the exact rights they had, so nobody loses access.
+const LEGACY = {
+  'Owner':          { title: 'Yacht Owner', access: 'oversight', depts: [] },
+  'admin':          { title: 'Captain / Master', access: 'command', depts: [] },
+  'Captain':        { title: 'Captain / Master', access: 'command', depts: [] },
+  'Chief Engineer': { title: 'Chief Engineer', access: 'lead', depts: ['all'] },
+  'Engineer':       { title: 'Engineer / Mechanic', access: 'lead', depts: ['engine'] },
+  'Bosun':          { title: 'Bosun (Deck Supervisor)', access: 'lead', depts: ['deck'] },
+  'Interior':       { title: 'Steward / Stewardess', access: 'qualified', depts: ['interior', 'galley'] },
+  'Deckhand':       { title: 'Deckhand', access: 'supervised', depts: [] },
+  'crew':           { title: 'Deckhand', access: 'supervised', depts: [] }
+};
+
+/** Canonical job title for anything stored or sent. */
+function titleOf(p) {
+  p = String(p || '').trim();
+  if (TITLES[p]) return p;
+  if (LEGACY[p]) return LEGACY[p].title;
+  const lower = p.toLowerCase();
+  const hit = Object.keys(TITLES).find(t => t.toLowerCase() === lower);
+  return hit || 'Deckhand';
+}
+const positionOf = titleOf; // older name used throughout
+
+function cleanDepts(list) {
+  const arr = Array.isArray(list) ? list : String(list || '').split(',');
+  const out = arr.map(d => String(d).trim()).filter(d => d === 'all' || DEPT_KEYS.indexOf(d) !== -1);
+  return out.indexOf('all') !== -1 ? ['all'] : out.filter((d, i) => out.indexOf(d) === i);
+}
+
+/** Defaults for a title (what a new member starts with). */
+function defaultRole(title) {
+  const t = titleOf(title);
+  return { title: t, access: TITLES[t].access, depts: TITLES[t].depts.slice() };
+}
+
+/** Title, access and departments for a membership row (fills in old rows that predate access levels). */
+function roleOf(m) {
+  if (m.access && ACCESS[m.access]) return { title: titleOf(m.position), access: m.access, depts: cleanDepts(m.departments) };
+  if (LEGACY[m.position]) { const l = LEGACY[m.position]; return { title: l.title, access: l.access, depts: l.depts.slice() }; }
+  return defaultRole(m.position);
+}
+
+/** Effective permissions for a role. */
+function permsFor(role) {
+  const a = ACCESS[role.access] || ACCESS.viewonly;
+  const depts = a.depts === 'all' ? 'all' : a.depts === 'member' ? (role.depts.indexOf('all') !== -1 ? 'all' : role.depts) : [];
+  return { access: role.access, accessLabel: a.label, manageCrew: a.manageCrew, createRoutine: a.createRoutine,
+           editAll: a.editAll, hires: a.hires, depts, contractor: !!a.contractor, viewOnly: !!a.viewOnly,
+           canReport: !a.viewOnly };
+}
+
+function permsOfMember(m) { return permsFor(roleOf(m)); }
+
+/** Catalog for the website: titles grouped, access levels, departments. */
+function roleCatalog() {
+  return {
+    titles: TITLE_LIST.map(t => ({ group: t[0], title: t[1], access: t[2], depts: t[3], help: t[4] })),
+    access: Object.keys(ACCESS).map(k => ({ key: k, label: ACCESS[k].label, help: ACCESS[k].help, usesDepts: ACCESS[k].depts === 'member' })),
+    departments: DEPT_KEYS.map(k => ({ key: k, label: DEPT_LABELS[k] }))
+  };
 }
 
 // ───────────────────────── ONE-TIME SETUP ─────────────────────────
@@ -125,9 +237,10 @@ function setupPlatform() {
       insert('Users', { id: c.id, name: c.name, email: String(c.email).toLowerCase(),
         passwordHash: c.passwordHash, salt: c.salt, active: removed ? 'FALSE' : (isTrue(c.active) ? 'TRUE' : 'FALSE'),
         isAdmin: 'FALSE', createdAt: c.createdAt || nowIso() });
-      insert('Memberships', { id: newId('M'), vesselId, userId: c.id, position: positionOf(c.role),
+      const role = roleOf({ position: c.role });
+      insert('Memberships', { id: newId('M'), vesselId, userId: c.id, position: role.title,
         status: removed || !isTrue(c.active) ? 'left' : 'active', joinedAt: c.createdAt || nowIso(),
-        leftAt: removed ? nowIso() : '', invitedBy: '' });
+        leftAt: removed ? nowIso() : '', invitedBy: '', access: role.access, departments: role.depts.join(',') });
     });
     fillBlankColumn('Tasks', 'vesselId', vesselId);
     fillBlankColumn('Audit', 'vesselId', vesselId);
@@ -196,7 +309,8 @@ function doPost(e) {
       requestAccount: () => withLock(() => requestAccount(req.request || {})),
       getSetup:       () => getSetup(req.setupToken),
       completeSetup:  () => withLock(() => completeSetup(req.setupToken, req.newPassword)),
-      publicReviews:  () => publicReviews(req.shareId)
+      publicReviews:  () => publicReviews(req.shareId),
+      catalog:        () => ({ ok: true, catalog: roleCatalog() })
     };
     if (pub[req.action]) return json(pub[req.action]());
 
@@ -225,12 +339,13 @@ function doPost(e) {
       // vessel crew
       listCrew:       () => ({ ok: true, crew: listCrew(V()) }),
       inviteMember:   () => withLock(() => inviteMember(V(), user, req.member || {})),
-      setPosition:    () => withLock(() => setPosition(V(), user, req.userId, req.position)),
+      setPosition:    () => withLock(() => setRole(V(), user, req.userId, defaultRole(req.position))),
+      setRole:        () => withLock(() => setRole(V(), user, req.userId, req.role || {})),
       removeMember:   () => withLock(() => removeMember(V(), user, req.userId)),
       resendSetup:    () => withLock(() => resendSetup(V(), user, req.userId)),
       cancelInvite:   () => withLock(() => cancelInvite(V(), user, req.userId)),
       listRequests:   () => listRequests(user, req.vesselId),
-      approveRequest: () => withLock(() => approveRequest(user, req.id, req.vesselId, req.position)),
+      approveRequest: () => withLock(() => approveRequest(user, req.id, req.vesselId, req.position, req.role)),
       declineRequest: () => withLock(() => declineRequest(user, req.id)),
 
       // profiles, directory, reviews
@@ -413,11 +528,12 @@ function bootstrap(user, vesselId) {
   vessels.forEach(v => vName[v.id] = v.name);
   const mine = readTable('Memberships').filter(m => m.userId === user.id && vName[m.vesselId]);
   const memberships = mine.filter(m => m.status === 'active')
-    .map(m => ({ membershipId: m.id, vesselId: m.vesselId, vesselName: vName[m.vesselId], position: positionOf(m.position) }));
+    .map(m => ({ membershipId: m.id, vesselId: m.vesselId, vesselName: vName[m.vesselId], position: titleOf(m.position),
+                 accessLabel: permsOfMember(m).accessLabel }));
   const invites = mine.filter(m => m.status === 'invited').map(m => {
     const by = readTable('Users').find(u => u.id === m.invitedBy);
     return { membershipId: m.id, vesselId: m.vesselId, vesselName: vName[m.vesselId],
-             position: positionOf(m.position), invitedBy: by ? by.name : '' };
+             position: titleOf(m.position), accessLabel: permsOfMember(m).accessLabel, invitedBy: by ? by.name : '' };
   });
 
   const out = {
@@ -426,7 +542,8 @@ function bootstrap(user, vesselId) {
     memberships,
     invites,
     vessels: isTrue(user.isAdmin) ? vessels.map(v => ({ vesselId: v.id, vesselName: v.name })) : undefined,
-    pendingRequests: countPendingRequests(user)
+    pendingRequests: countPendingRequests(user),
+    catalog: roleCatalog()
   };
 
   let pick = vesselId;
@@ -458,8 +575,9 @@ function vesselCtx(user, vesselId) {
   if (!vessel) throw new Error('Vessel not found');
   const m = readTable('Memberships').find(x => x.vesselId === vesselId && x.userId === user.id && x.status === 'active');
   if (!m && !isTrue(user.isAdmin)) throw new Error('You are not on this vessel');
-  const position = m ? positionOf(m.position) : 'Captain'; // CJM admin acts with Captain rights
-  return { vessel, membership: m || null, position, perms: POSITIONS[position], isAdmin: isTrue(user.isAdmin) };
+  const role = m ? roleOf(m) : { title: 'CJM admin', access: 'command', depts: [] }; // CJM admin acts with Command rights
+  return { vessel, membership: m || null, position: role.title, role, perms: permsFor(role),
+           isAdmin: isTrue(user.isAdmin), userId: user.id };
 }
 
 function inMyDept(c, task) {
@@ -470,6 +588,7 @@ function inMyDept(c, task) {
 }
 
 function canSignOff(c, user, task) {
+  if (c.perms.viewOnly) return false;
   return task.state === 'Open' && (task.assignedTo === user.id || inMyDept(c, task));
 }
 
@@ -479,31 +598,48 @@ function canEdit(c, user, task) {
 
 function canSearch(user) {
   if (isTrue(user.isAdmin)) return true;
-  return readTable('Memberships').some(m => m.userId === user.id && m.status === 'active' &&
-    POSITIONS[positionOf(m.position)].hires);
+  return readTable('Memberships').some(m => m.userId === user.id && m.status === 'active' && permsOfMember(m).hires);
 }
 
 // ───────────────────────── VESSEL CREW ─────────────────────────
 function listCrew(c) {
   const users = {};
   readTable('Users').forEach(u => users[u.id] = u);
+  const titleOrder = TITLE_LIST.map(t => t[1]);
   return readTable('Memberships')
     .filter(m => m.vesselId === c.vessel.id && (m.status === 'active' || m.status === 'invited') && users[m.userId])
+    .filter(m => !c.perms.contractor || m.userId === c.userId || permsOfMember(m).manageCrew)
     .map(m => {
-      const u = users[m.userId];
-      return { id: u.id, name: u.name, email: u.email, position: positionOf(m.position), status: m.status,
+      const u = users[m.userId], role = roleOf(m), pr = permsFor(role);
+      return { id: u.id, name: u.name, email: c.perms.contractor ? '' : u.email, position: role.title, title: role.title,
+               access: role.access, accessLabel: pr.accessLabel, departments: role.depts, status: m.status,
                joinedAt: m.joinedAt, active: isTrue(u.active), needsSetup: !u.passwordHash };
     })
-    .sort((a, b) => Object.keys(POSITIONS).indexOf(a.position) - Object.keys(POSITIONS).indexOf(b.position));
+    .sort((a, b) => (ACCESS[a.access].rank - ACCESS[b.access].rank) || (titleOrder.indexOf(a.title) - titleOrder.indexOf(b.title)));
 }
 
 function requireManager(c) {
   if (!c.perms.manageCrew) throw new Error('Only the Captain or Owner can manage crew');
 }
 
-function canGrant(c, position) {
-  if (!POSITIONS[position]) throw new Error('Unknown position');
-  if (position === 'Owner' && !(c.isAdmin || c.position === 'Owner')) throw new Error('Only an Owner can add another Owner');
+/** Builds a full role from what the Captain chose; title alone never decides access. */
+function resolveRole(input, fallbackTitle) {
+  input = input || {};
+  const title = titleOf(input.title || input.position || fallbackTitle);
+  const base = defaultRole(title);
+  const access = ACCESS[input.access] ? input.access : base.access;
+  const depts = input.departments !== undefined ? cleanDepts(input.departments) : (input.access && input.access !== base.access ? [] : base.depts);
+  return { title, access, depts };
+}
+
+function canGrant(c, role) {
+  if (!ACCESS[role.access]) throw new Error('Unknown access level');
+  if (role.access === 'oversight' && !(c.isAdmin || c.perms.access === 'oversight')) {
+    throw new Error('Only an Owner or manager with Owner oversight can grant Owner oversight');
+  }
+  if (role.access === 'command' && !(c.isAdmin || c.perms.access === 'oversight' || c.perms.access === 'command')) {
+    throw new Error('Only Command or Owner oversight can grant Command access');
+  }
 }
 
 function activeMembership(vesselId, userId) {
@@ -513,7 +649,7 @@ function activeMembership(vesselId, userId) {
 
 function otherManagers(vesselId, exceptUserId) {
   return readTable('Memberships').filter(m => m.vesselId === vesselId && m.status === 'active' &&
-    m.userId !== exceptUserId && MANAGERS.indexOf(positionOf(m.position)) !== -1).length;
+    m.userId !== exceptUserId && permsOfMember(m).manageCrew).length;
 }
 
 /**
@@ -521,7 +657,9 @@ function otherManagers(vesselId, exceptUserId) {
  * Existing account → invitation they accept after logging in (keeps their profile and reviews).
  * New person → account created and a setup link returned (and emailed when possible).
  */
-function addToVessel(byUser, vessel, email, name, position) {
+function addToVessel(byUser, vessel, email, name, role) {
+  const position = role ? role.title : '';
+  const roleCols = role ? { access: role.access, departments: role.depts.join(',') } : {};
   email = String(email || '').toLowerCase().trim();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error('Enter a valid email');
   let user = readTable('Users').find(u => u.email === email);
@@ -531,14 +669,14 @@ function addToVessel(byUser, vessel, email, name, position) {
     if (existing) throw new Error(user.name + (existing.status === 'invited' ? ' already has an invitation' : ' is already on this vessel'));
     if (!user.passwordHash) {
       // account exists but was never set up: add directly and send a fresh setup link
-      insert('Memberships', { id: newId('M'), vesselId: vessel.id, userId: user.id, position, status: 'active',
-                              joinedAt: nowIso(), leftAt: '', invitedBy: byUser.id });
+      insert('Memberships', Object.assign({ id: newId('M'), vesselId: vessel.id, userId: user.id, position, status: 'active',
+                              joinedAt: nowIso(), leftAt: '', invitedBy: byUser.id }, roleCols));
       const link = makeSetupLink(user.id);
       const emailed = mailSetup(user, vessel, position, byUser, link);
       return { ok: true, status: 'created', name: user.name, setupLink: link, emailed };
     }
-    insert('Memberships', { id: newId('M'), vesselId: vessel.id, userId: user.id, position, status: 'invited',
-                            joinedAt: '', leftAt: '', invitedBy: byUser.id });
+    insert('Memberships', Object.assign({ id: newId('M'), vesselId: vessel.id, userId: user.id, position, status: 'invited',
+                            joinedAt: '', leftAt: '', invitedBy: byUser.id }, roleCols));
     const emailed = sendMail(user.email, 'Invitation to join ' + vessel.name,
       '<p>' + esc(byUser.name) + ' invited you to join <b>' + esc(vessel.name) + '</b> as <b>' + esc(position) + '</b>.</p>' +
       '<p>Log in to ' + esc(CONFIG.APP_NAME) + ' to accept. Your profile and reviews come with you.</p>' + appLink());
@@ -549,8 +687,8 @@ function addToVessel(byUser, vessel, email, name, position) {
            active: 'TRUE', isAdmin: 'FALSE', createdAt: nowIso() };
   insert('Users', user);
   if (vessel) {
-    insert('Memberships', { id: newId('M'), vesselId: vessel.id, userId: user.id, position, status: 'active',
-                            joinedAt: nowIso(), leftAt: '', invitedBy: byUser.id });
+    insert('Memberships', Object.assign({ id: newId('M'), vesselId: vessel.id, userId: user.id, position, status: 'active',
+                            joinedAt: nowIso(), leftAt: '', invitedBy: byUser.id }, roleCols));
   }
   const link = makeSetupLink(user.id);
   const emailed = mailSetup(user, vessel, position, byUser, link);
@@ -570,28 +708,33 @@ function mailSetup(user, vessel, position, byUser, link) {
 
 function inviteMember(c, user, m) {
   requireManager(c);
-  const position = positionOf(m.position);
-  canGrant(c, position);
-  const r = addToVessel(user, c.vessel, m.email, m.name, position);
-  audit(user.id, 'inviteMember', '', r.name + ' as ' + position + ' (' + r.status + ')', c.vessel.id);
+  const role = resolveRole(m.role || m, 'Deckhand');
+  canGrant(c, role);
+  const r = addToVessel(user, c.vessel, m.email, m.name, role);
+  audit(user.id, 'inviteMember', '', r.name + ' as ' + role.title + ', ' + ACCESS[role.access].label + ' (' + r.status + ')', c.vessel.id);
   return r;
 }
 
-function setPosition(c, user, userId, position) {
+function setRole(c, user, userId, input) {
   requireManager(c);
-  position = positionOf(position);
-  canGrant(c, position);
   const m = activeMembership(c.vessel.id, userId);
   if (!m) throw new Error('Crew member not found');
-  const old = positionOf(m.position);
-  if (old === 'Owner' && !(c.isAdmin || c.position === 'Owner')) throw new Error('Only an Owner can change an Owner');
-  if (m.status === 'active' && MANAGERS.indexOf(old) !== -1 && MANAGERS.indexOf(position) === -1 &&
-      otherManagers(c.vessel.id, userId) === 0) {
-    throw new Error('Each vessel needs at least one Captain or Owner');
+  const old = roleOf(m);
+  const role = resolveRole(Object.assign({ title: old.title }, input), old.title);
+  if (input.access === undefined && input.departments === undefined && input.title && input.title !== old.title) {
+    // changing only the title never changes access
+    role.access = old.access; role.depts = old.depts;
   }
-  m.position = position;
+  if (old.access === 'oversight' && !(c.isAdmin || c.perms.access === 'oversight')) throw new Error('Only an Owner can change Owner oversight');
+  if (role.access !== old.access) canGrant(c, role);
+  if (m.status === 'active' && ACCESS[old.access].manageCrew && !ACCESS[role.access].manageCrew && otherManagers(c.vessel.id, userId) === 0) {
+    throw new Error('Each vessel needs at least one person with Command or Owner oversight');
+  }
+  if (userId === user.id && ACCESS[old.access].manageCrew && !ACCESS[role.access].manageCrew) throw new Error('You cannot remove your own Command access');
+  m.position = role.title; m.access = role.access; m.departments = role.depts.join(',');
   update('Memberships', m._row, m);
-  audit(user.id, 'setPosition', '', userName(userId) + ': ' + old + ' → ' + position, c.vessel.id);
+  audit(user.id, 'setRole', '', userName(userId) + ': ' + old.title + ' / ' + ACCESS[old.access].label + ' → ' +
+    role.title + ' / ' + ACCESS[role.access].label + (role.depts.length ? ' (' + role.depts.join(', ') + ')' : ''), c.vessel.id);
   return { ok: true };
 }
 
@@ -600,10 +743,10 @@ function removeMember(c, user, userId) {
   if (userId === user.id) throw new Error('You cannot remove yourself');
   const m = activeMembership(c.vessel.id, userId);
   if (!m) throw new Error('Crew member not found');
-  const pos = positionOf(m.position);
-  if (pos === 'Owner' && !(c.isAdmin || c.position === 'Owner')) throw new Error('Only an Owner can remove an Owner');
-  if (m.status === 'active' && MANAGERS.indexOf(pos) !== -1 && otherManagers(c.vessel.id, userId) === 0) {
-    throw new Error('Each vessel needs at least one Captain or Owner');
+  const rp = permsOfMember(m);
+  if (rp.access === 'oversight' && !(c.isAdmin || c.perms.access === 'oversight')) throw new Error('Only an Owner can remove an Owner');
+  if (m.status === 'active' && rp.manageCrew && otherManagers(c.vessel.id, userId) === 0) {
+    throw new Error('Each vessel needs at least one person with Command or Owner oversight');
   }
   m.status = m.status === 'invited' ? 'declined' : 'left';
   m.leftAt = nowIso();
@@ -625,7 +768,7 @@ function resendSetup(c, user, userId) {
   if (!m || !u) throw new Error('Crew member not found');
   if (u.passwordHash) throw new Error(u.name + ' has already set up their account');
   const link = makeSetupLink(u.id);
-  const emailed = mailSetup(u, c.vessel, positionOf(m.position), user, link);
+  const emailed = mailSetup(u, c.vessel, titleOf(m.position), user, link);
   return { ok: true, setupLink: link, emailed };
 }
 
@@ -645,7 +788,7 @@ function userName(id) {
 }
 
 // ───────────────────────── ACCOUNT REQUESTS ─────────────────────────
-const REQUEST_KINDS = ['Crew', 'Captain', 'Owner'];
+const REQUEST_KINDS = ['Crew', 'Captain', 'Owner', 'Contractor'];
 
 function requestAccount(r) {
   const email = String(r.email || '').toLowerCase().trim();
@@ -659,7 +802,7 @@ function requestAccount(r) {
   const kind = REQUEST_KINDS.indexOf(r.kind) !== -1 ? r.kind : 'Crew';
   insert('Requests', {
     id: newId('R'), name: name.slice(0, 100), email, kind,
-    position: POSITIONS[r.position] ? r.position : '',
+    position: TITLES[r.position] ? r.position : '',
     vesselName: String(r.vesselName || '').trim().slice(0, 100),
     message: String(r.message || '').trim().slice(0, 1000),
     status: 'pending', createdAt: nowIso(), handledBy: '', handledAt: ''
@@ -682,7 +825,7 @@ function requestsVisibleTo(user, vesselId) {
   const pending = readTable('Requests').filter(r => r.status === 'pending');
   if (isTrue(user.isAdmin) && !vesselId) return pending;
   const managed = readTable('Memberships').filter(m => m.userId === user.id && m.status === 'active' &&
-    POSITIONS[positionOf(m.position)].manageCrew && (!vesselId || m.vesselId === vesselId)).map(m => m.vesselId);
+    permsOfMember(m).manageCrew && (!vesselId || m.vesselId === vesselId)).map(m => m.vesselId);
   if (isTrue(user.isAdmin) && vesselId && managed.indexOf(vesselId) === -1) managed.push(vesselId);
   if (!managed.length) return [];
   const names = readTable('Vessels').filter(v => managed.indexOf(v.id) !== -1).map(v => normVessel(v.name));
@@ -699,15 +842,16 @@ function listRequests(user, vesselId) {
     message: r.message, createdAt: r.createdAt })) };
 }
 
-function approveRequest(user, id, vesselId, position) {
+function approveRequest(user, id, vesselId, position, roleInput) {
   const r = requestsVisibleTo(user, '').find(x => x.id === id);
   if (!r) throw new Error('Request not found or already handled');
   let vessel = null;
   if (vesselId) {
     const c = vesselCtx(user, vesselId);
     requireManager(c);
-    position = positionOf(position || r.position || (r.kind === 'Owner' ? 'Owner' : r.kind === 'Captain' ? 'Captain' : 'Deckhand'));
-    canGrant(c, position);
+    const kindTitle = { Owner: 'Yacht Owner', Captain: 'Captain / Master', Contractor: 'Independent Contractor / External Technician' }[r.kind] || 'Deckhand';
+    var role = resolveRole(roleInput || { title: position || r.position || kindTitle }, kindTitle);
+    canGrant(c, role);
     vessel = c.vessel;
   } else if (!isTrue(user.isAdmin)) {
     throw new Error('Choose the vessel to add them to');
@@ -718,7 +862,7 @@ function approveRequest(user, id, vesselId, position) {
     if (exists) throw new Error('This email already has an account. Add them to a vessel instead.');
     res = addToVessel(user, null, r.email, r.name, '');
   } else {
-    res = addToVessel(user, vessel, r.email, r.name, position);
+    res = addToVessel(user, vessel, r.email, r.name, role);
   }
   r.status = 'approved'; r.handledBy = user.id; r.handledAt = nowIso();
   update('Requests', r._row, r);
@@ -752,10 +896,10 @@ function vesselHistory(userId) {
   return readTable('Memberships')
     .filter(m => m.userId === userId && (m.status === 'active' || m.status === 'left') && vessels[m.vesselId])
     .map(m => ({ vesselId: m.vesselId, vesselName: vessels[m.vesselId].name, vesselType: vessels[m.vesselId].type,
-                 length: vessels[m.vesselId].length, position: positionOf(m.position),
+                 length: vessels[m.vesselId].length, position: titleOf(m.position),
                  from: (m.joinedAt || '').slice(0, 10), to: m.status === 'left' ? (m.leftAt || '').slice(0, 10) : '',
-                 current: m.status === 'active',
-                 days: m.joinedAt ? Math.max(0, daysBetween(m.joinedAt.slice(0, 10), m.status === 'left' && m.leftAt ? m.leftAt.slice(0, 10) : today())) : 0 }))
+                 current: m.status === 'active', contractor: permsOfMember(m).contractor,
+                 days: m.joinedAt && !permsOfMember(m).contractor ? Math.max(0, daysBetween(m.joinedAt.slice(0, 10), m.status === 'left' && m.leftAt ? m.leftAt.slice(0, 10) : today())) : 0 }))
     .sort((a, b) => (b.from || '') < (a.from || '') ? -1 : 1);
 }
 
@@ -774,7 +918,7 @@ function reviewVesselFor(viewer, targetId) {
   if (viewer.id === targetId) return '';
   const ms = readTable('Memberships');
   const mine = ms.filter(m => m.userId === viewer.id && (m.status === 'active' || m.status === 'left') &&
-    POSITIONS[positionOf(m.position)].hires).map(m => m.vesselId);
+    permsOfMember(m).hires).map(m => m.vesselId);
   const theirs = ms.find(m => m.userId === targetId && (m.status === 'active' || m.status === 'left') &&
     mine.indexOf(m.vesselId) !== -1);
   return theirs ? theirs.vesselId : '';
@@ -878,7 +1022,7 @@ function searchCrew(viewer, req) {
   const current = {};
   readTable('Memberships').forEach(m => {
     if (m.status !== 'active' && m.status !== 'left') return;
-    (current[m.userId] = current[m.userId] || []).push({ position: positionOf(m.position), active: m.status === 'active',
+    (current[m.userId] = current[m.userId] || []).push({ position: titleOf(m.position), active: m.status === 'active',
                                                           vessel: vessels[m.vesselId] || '' });
   });
   const reviews = {};
@@ -956,7 +1100,7 @@ function publicReviews(shareId) {
   const ms = readTable('Memberships');
   const roleOf = (reviewerId, vesselId) => {
     const m = ms.find(x => x.userId === reviewerId && x.vesselId === vesselId);
-    return m ? positionOf(m.position) : 'Captain';
+    return m ? titleOf(m.position) : 'Captain / Master';
   };
   const reviews = readTable('Reviews').filter(r => r.userId === user.id)
     .sort((a, b) => a.createdAt < b.createdAt ? 1 : -1)
@@ -978,13 +1122,13 @@ function vesselReviewers(vesselId, exceptUserId) {
   const users = {};
   readTable('Users').forEach(u => users[u.id] = u);
   return readTable('Memberships').filter(m => m.vesselId === vesselId && m.status === 'active' && m.userId !== exceptUserId &&
-    POSITIONS[positionOf(m.position)].hires && users[m.userId] && isTrue(users[m.userId].active))
+    permsOfMember(m).hires && users[m.userId] && isTrue(users[m.userId].active))
     .map(m => users[m.userId]);
 }
 
 function isVesselReviewer(vesselId, userId) {
   return readTable('Memberships').some(m => m.vesselId === vesselId && m.userId === userId && m.status === 'active' &&
-    POSITIONS[positionOf(m.position)].hires);
+    permsOfMember(m).hires);
 }
 
 function pendingReviewsFor(vesselId, reviewerId) {
@@ -1085,7 +1229,7 @@ function performanceOf(userId, withNames) {
   const comps = {}; readTable('Completions').forEach(x => comps[x.id] = x);
   const vessels = {}; readTable('Vessels').forEach(v => vessels[v.id] = v.name);
   const ms = readTable('Memberships');
-  const roleOf = (uid, vid) => { const m = ms.find(x => x.userId === uid && x.vesselId === vid); return m ? positionOf(m.position) : 'Captain'; };
+  const roleOf = (uid, vid) => { const m = ms.find(x => x.userId === uid && x.vesselId === vid); return m ? titleOf(m.position) : 'Captain / Master'; };
   const items = readTable('TaskReviews').filter(r => r.userId === userId && r.status === 'reviewed')
     .sort((a, b) => a.reviewedAt < b.reviewedAt ? 1 : -1)
     .map(r => ({ date: (comps[r.completionId] || {}).performedDate || (r.reviewedAt || '').slice(0, 10),
@@ -1098,8 +1242,7 @@ function performanceOf(userId, withNames) {
 
 // ───────────────────────── CREW RECORD BACKUP (weekly, per person) ─────────────────────────
 function seaTime(userId) {
-  return vesselHistory(userId).map(v => Object.assign({}, v, {
-    days: v.from ? Math.max(0, daysBetween(v.from, v.to || today())) : 0 }));
+  return vesselHistory(userId);
 }
 
 function fmtDays(d) {
@@ -1132,7 +1275,8 @@ function buildCrewRecord(user, stamp) {
       ['Captain recommendations', stars.count ? stars.average + ' / 5 from ' + stars.count : 'None yet'],
       ['About', p.bio || ''], ['Record date', stamp]]],
     ['Sea time', ['Vessel', 'Type', 'Length', 'Position', 'From', 'To', 'Days aboard', 'Time aboard'],
-      sea.map(v => [v.vesselName, v.vesselType, v.length, v.position, v.from, v.current ? 'Present' : v.to, String(v.days), fmtDays(v.days)])
+      sea.map(v => [v.vesselName, v.vesselType, v.length, v.position, v.from, v.current ? 'Present' : v.to,
+                    v.contractor ? '' : String(v.days), v.contractor ? 'Contractor work (not sea time)' : fmtDays(v.days)])
         .concat(parseList(p.experience).map(x => [x.vessel, '', '', x.position, '', '', '', x.years + ' (self-reported)']))],
     ['Certifications', ['Certificate', 'Expires', 'Status'],
       certs.map(x => [x.name, x.expires, !x.expires ? 'No expiry' : x.expires < today() ? 'EXPIRED' :
@@ -1228,8 +1372,8 @@ function adminOverview() {
   const vessels = readTable('Vessels').map(v => {
     vName[v.id] = v.name;
     const vt = tasks.filter(t => t.vesselId === v.id);
-    const managers = ms.filter(m => m.vesselId === v.id && m.status === 'active' && MANAGERS.indexOf(positionOf(m.position)) !== -1)
-      .map(m => { const u = users.find(x => x.id === m.userId); return u ? u.name + ' (' + positionOf(m.position) + ')' : ''; })
+    const managers = ms.filter(m => m.vesselId === v.id && m.status === 'active' && permsOfMember(m).manageCrew)
+      .map(m => { const u = users.find(x => x.id === m.userId); return u ? u.name + ' (' + titleOf(m.position) + ')' : ''; })
       .filter(Boolean);
     return {
       id: v.id, name: v.name, type: v.type, length: v.length, homePort: v.homePort, active: isTrue(v.active),
@@ -1242,7 +1386,7 @@ function adminOverview() {
     users: users.map(u => ({
       id: u.id, name: u.name, email: u.email, active: isTrue(u.active), isAdmin: isTrue(u.isAdmin),
       needsSetup: !u.passwordHash,
-      vessels: ms.filter(m => m.userId === u.id && m.status === 'active').map(m => (vName[m.vesselId] || '?') + ' · ' + positionOf(m.position))
+      vessels: ms.filter(m => m.userId === u.id && m.status === 'active').map(m => (vName[m.vesselId] || '?') + ', ' + titleOf(m.position) + ' (' + permsOfMember(m).accessLabel + ')')
     })).sort((a, b) => a.name < b.name ? -1 : 1)
   };
 }
@@ -1259,7 +1403,8 @@ function createVessel(user, v) {
   audit(user.id, 'createVessel', '', name, vessel.id);
   let manager = null;
   if (v.managerEmail) {
-    const pos = v.managerPosition === 'Owner' ? 'Owner' : 'Captain';
+    const want = titleOf(v.managerPosition === 'Owner' ? 'Yacht Owner' : v.managerPosition || 'Captain / Master');
+    const pos = defaultRole(['Yacht Owner', 'Yacht Manager (shore-based)', 'Captain / Master', 'Staff Captain'].indexOf(want) !== -1 ? want : 'Captain / Master');
     const email = String(v.managerEmail).toLowerCase().trim();
     const pending = readTable('Requests').filter(r => r.status === 'pending' && r.email === email);
     manager = addToVessel(user, vessel, email, v.managerName || (pending[0] && pending[0].name), pos);
@@ -1298,7 +1443,8 @@ function crewNames() {
 }
 
 function vesselTasks(c) {
-  return readTable('Tasks').filter(t => t.vesselId === c.vessel.id);
+  return readTable('Tasks').filter(t => t.vesselId === c.vessel.id &&
+    (!c.perms.contractor || t.assignedTo === c.userId || t.createdBy === c.userId));
 }
 
 function taskIn(c, id) {
@@ -1344,8 +1490,9 @@ function crewOnVessel(c, userId) {
 
 function createTask(c, user, t) {
   if (!t.title) throw new Error('Title required');
+  if (c.perms.viewOnly) throw new Error('View-only access cannot create tasks or report issues');
   const type = t.type === 'Issue' ? 'Issue' : 'Routine';
-  if (type === 'Routine' && !c.perms.createRoutine) throw new Error('Your position can report issues but not schedule maintenance');
+  if (type === 'Routine' && !c.perms.createRoutine) throw new Error('Your access level can report issues but not schedule maintenance');
   if (t.assignedTo && (!c.perms.createRoutine || !crewOnVessel(c, t.assignedTo))) t.assignedTo = '';
   const recurring = !!t.recurring && type === 'Routine';
   if (type === 'Routine' && !t.dueDate) throw new Error('Due date required');
@@ -1367,9 +1514,9 @@ function createTask(c, user, t) {
 
 function updateTask(c, user, id, changes) {
   const t = taskIn(c, id);
-  if (!canEdit(c, user, t)) throw new Error('Your position cannot edit this task');
+  if (!canEdit(c, user, t)) throw new Error('Your access level cannot edit this task');
   if (changes.assignedTo !== undefined && changes.assignedTo !== t.assignedTo) {
-    if (!c.perms.createRoutine) throw new Error('Your position cannot assign tasks');
+    if (!c.perms.createRoutine) throw new Error('Your access level cannot assign tasks');
     if (!crewOnVessel(c, changes.assignedTo)) throw new Error('That person is not on this vessel');
   }
   if (t.type === 'Issue') delete changes.recurring;
@@ -1394,8 +1541,9 @@ function completeTask(c, user, req) {
   const t = taskIn(c, req.id);
   if (t.state !== 'Open') throw new Error('Task is already ' + t.state.toLowerCase());
   if (!canSignOff(c, user, t)) {
-    const label = { engine: 'engineering', deck: 'deck', interior: 'interior' }[DEPARTMENTS[t.system]];
-    throw new Error('Only the assigned crew member' + (label ? ' or the ' + label + ' department' : ' or an officer') + ' can sign this off');
+    if (c.perms.viewOnly) throw new Error('View-only access cannot sign off tasks');
+    const label = DEPT_LABELS[DEPARTMENTS[t.system]];
+    throw new Error('Only the assigned person' + (label ? ' or ' + label.toLowerCase() + ' crew with sign-off rights' : ' or an officer') + ' can sign this off');
   }
   const performed = req.performedDate || today();
   validateDate(performed);
@@ -1497,6 +1645,7 @@ function decorate(c, t, names, user) {
   out.assignedToName = names[t.assignedTo] || '';
   out.lastPerformedByName = names[t.lastPerformedBy] || '';
   out.department = DEPARTMENTS[t.system] || 'any';
+  out.departmentLabel = DEPT_LABELS[out.department] || '';
   out.canSignOff = canSignOff(c, user, t);
   out.canEdit = canEdit(c, user, t);
   return out;
@@ -1535,7 +1684,7 @@ function dailyReminders() {
         if (send) { task.reminderLog = JSON.stringify(log); update('Tasks', task._row, task); }
       });
       if (!overdue.length && !upcoming.length) return;
-      const emails = members.filter(m => m.vesselId === v.id && users[m.userId] && isTrue(users[m.userId].active))
+      const emails = members.filter(m => m.vesselId === v.id && !permsOfMember(m).contractor && users[m.userId] && isTrue(users[m.userId].active))
         .map(m => users[m.userId].email).filter(Boolean);
       if (!emails.length) return;
 
@@ -1589,7 +1738,7 @@ function runBackups(onlyVesselId) {
   vessels.forEach(v => {
     const file = buildBackupSheet(v, users, stamp, root);
     const xlsx = exportXlsx(file.id, v.name + ' backup ' + stamp + '.xlsx');
-    const to = members.filter(m => m.vesselId === v.id && CONFIG.BACKUP_TO.indexOf(positionOf(m.position)) !== -1 &&
+    const to = members.filter(m => m.vesselId === v.id && CONFIG.BACKUP_TO.indexOf(roleOf(m).access) !== -1 &&
                                    users[m.userId] && isTrue(users[m.userId].active))
       .map(m => users[m.userId].email).filter(e => admins.indexOf(e) === -1);
     shareFolder(file.folder, to);

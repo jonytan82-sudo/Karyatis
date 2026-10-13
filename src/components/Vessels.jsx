@@ -8,7 +8,7 @@ export default function Vessels({ options, current, busy, onOpen }) {
           <button key={v.id} className={current && current.id === v.id ? 'vessel-card current' : 'vessel-card'}
             disabled={busy} onClick={() => onOpen(v.id)}>
             <span className="vc-name">{v.name}</span>
-            <span className="vc-role">{v.position}</span>
+            <span className="vc-role">{v.position}{v.accessLabel ? `, ${v.accessLabel}` : ''}</span>
           </button>
         ))}
       </div>

@@ -1,22 +1,27 @@
 import { useState } from 'react';
 import { call } from '../api.js';
-import { POSITIONS, POSITION_HELP } from '../util.js';
 import SetupLink from './SetupLink.jsx';
 import Requests from './Requests.jsx';
 import Modal from './Modal.jsx';
 import ProfileView from './ProfileView.jsx';
+import { RoleFields, RoleReference, deptNames } from './Roles.jsx';
 
-const BLANK = { email: '', name: '', position: 'Deckhand' };
+const blankRole = (catalog) => {
+  const t = catalog?.titles.find((x) => x.title === 'Deckhand');
+  return { title: 'Deckhand', access: t ? t.access : 'supervised', departments: t ? t.depts : [] };
+};
 
-export default function Crew({ user, vessel, position, perms, crew, onChanged }) {
+export default function Crew({ user, vessel, perms, crew, catalog, onChanged }) {
   const manager = perms.manageCrew;
-  const ownerRights = position === 'Owner' || user.isAdmin;
-  const [form, setForm] = useState(BLANK);
+  const allowOversight = perms.access === 'oversight' || user.isAdmin;
+  const allowCommand = allowOversight || perms.access === 'command';
+  const [form, setForm] = useState({ email: '', name: '', role: blankRole(catalog) });
   const [result, setResult] = useState(null);
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [viewing, setViewing] = useState(null);
+  const [editing, setEditing] = useState(null); // { member, role }
 
   async function run(fn, done) {
     setError(''); setMsg(''); setBusy(true);
@@ -28,8 +33,8 @@ export default function Crew({ user, vessel, position, perms, crew, onChanged })
   const invite = async (e) => {
     e.preventDefault();
     setResult(null);
-    const r = await run(() => call('inviteMember', { member: form }));
-    if (r) { setResult(r); setForm(BLANK); }
+    const r = await run(() => call('inviteMember', { member: { email: form.email, name: form.name, role: form.role } }));
+    if (r) { setResult(r); setForm({ email: '', name: '', role: blankRole(catalog) }); }
   };
 
   const remove = (c) => {
@@ -44,32 +49,34 @@ export default function Crew({ user, vessel, position, perms, crew, onChanged })
     if (r) setResult({ ...r, status: 'created', name: c.name });
   };
 
+  const saveRole = async () => {
+    const r = await run(() => call('setRole', { userId: editing.member.id, role: editing.role }), `${editing.member.name} updated.`);
+    if (r) setEditing(null);
+  };
+
   const active = crew.filter((c) => c.status === 'active');
   const invited = crew.filter((c) => c.status === 'invited');
-  const positions = POSITIONS.filter((p) => p !== 'Owner' || ownerRights);
+  const canTouch = (c) => c.access !== 'oversight' || allowOversight;
 
   const row = (c) => (
     <li key={c.id} className={c.status === 'invited' ? 'inactive' : ''}>
       <span className="crew-who">
         <button className="link plain" onClick={() => setViewing(c.id)}><b>{c.name}</b></button>
-        <small>
-          {c.position}, {c.email}
-          {c.status === 'invited' && ', invitation pending'}
-          {c.needsSetup && c.status === 'active' && ', has not set a password yet'}
-        </small>
+        <small>{c.title}{c.email && `, ${c.email}`}</small>
+        <span className="access-line">
+          <span className={`access-tag acc-${c.access}`}>{c.accessLabel}</span>
+          {c.departments?.length > 0 && <small>{deptNames(catalog, c.departments)}</small>}
+          {c.status === 'invited' && <small>Invitation pending</small>}
+          {c.needsSetup && c.status === 'active' && <small>Has not set a password yet</small>}
+        </span>
       </span>
-      {manager && c.id !== user.id && (
+      {manager && c.id !== user.id && canTouch(c) && (
         <span className="crew-actions">
-          {c.status === 'active' && (c.position !== 'Owner' || ownerRights) && (
-            <select value={c.position} aria-label={`Position for ${c.name}`} disabled={busy}
-              onChange={(e) => run(() => call('setPosition', { userId: c.id, position: e.target.value }), `${c.name} is now ${e.target.value}.`)}>
-              {positions.map((p) => <option key={p}>{p}</option>)}
-            </select>
+          {c.status === 'active' && (
+            <button className="btn" onClick={() => setEditing({ member: c, role: { title: c.title, access: c.access, departments: c.departments || [] } })}>Edit role</button>
           )}
           {c.needsSetup && c.status === 'active' && <button className="link" onClick={() => resend(c)}>New setup link</button>}
-          {(c.position !== 'Owner' || ownerRights) && (
-            <button className="link danger" onClick={() => remove(c)}>{c.status === 'invited' ? 'Cancel invite' : 'Remove'}</button>
-          )}
+          <button className="link danger" onClick={() => remove(c)}>{c.status === 'invited' ? 'Cancel invite' : 'Remove'}</button>
         </span>
       )}
     </li>
@@ -78,7 +85,7 @@ export default function Crew({ user, vessel, position, perms, crew, onChanged })
   return (
     <div className="crew">
       {msg && <div className="ok">{msg}</div>}
-      {error && <div className="alert">{error}</div>}
+      {error && !editing && <div className="alert">{error}</div>}
 
       <section className="group">
         <h3>{vessel.name} crew <span className="count">{active.length}</span></h3>
@@ -97,7 +104,7 @@ export default function Crew({ user, vessel, position, perms, crew, onChanged })
           <SetupLink result={result} onDismiss={() => setResult(null)} />
           <form className="form card" onSubmit={invite}>
             <p className="hint">
-              Enter their email. Crew who already have a CJM Marine account from another vessel get an invitation and keep their profile.
+              Crew who already have a CJM Marine account from another vessel get an invitation and keep their profile.
               New crew get a link to set their password.
             </p>
             <div className="two">
@@ -106,30 +113,33 @@ export default function Crew({ user, vessel, position, perms, crew, onChanged })
                 <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
               </label>
             </div>
-            <label>Position
-              <select value={form.position} onChange={(e) => setForm({ ...form, position: e.target.value })}>
-                {positions.map((p) => <option key={p}>{p}</option>)}
-              </select>
-            </label>
-            <p className="hint">{POSITION_HELP[form.position]}</p>
+            <RoleFields catalog={catalog} value={form.role} isNew allowOversight={allowOversight} allowCommand={allowCommand}
+              onChange={(role) => setForm({ ...form, role })} />
             <div className="actions left"><button className="btn primary" disabled={busy}>Add to {vessel.name}</button></div>
           </form>
         </section>
       )}
 
-      {manager && <Requests vesselId={vessel.id} canGrantOwner={ownerRights} onChanged={onChanged} />}
+      {manager && <Requests vesselId={vessel.id} catalog={catalog} allowOversight={allowOversight} allowCommand={allowCommand} onChanged={onChanged} />}
 
-      <section className="group">
-        <h3>What each position can do</h3>
-        <dl className="positions">
-          {POSITIONS.map((p) => <div key={p}><dt>{p}</dt><dd>{POSITION_HELP[p]}</dd></div>)}
-        </dl>
-        <p className="hint">Everyone on the vessel can see all its tasks, report issues, add notes, and sign off tasks assigned to them.</p>
-      </section>
+      <RoleReference catalog={catalog} />
 
       {viewing && (
         <Modal title="Crew profile" onClose={() => setViewing(null)} wide>
           <ProfileView userId={viewing} />
+        </Modal>
+      )}
+      {editing && (
+        <Modal title={`${editing.member.name}: role and access`} onClose={() => { setEditing(null); setError(''); }}>
+          <div className="form">
+            <RoleFields catalog={catalog} value={editing.role} allowOversight={allowOversight} allowCommand={allowCommand}
+              onChange={(role) => setEditing({ ...editing, role })} />
+            {error && <div className="alert">{error}</div>}
+            <div className="actions">
+              <button className="btn" onClick={() => { setEditing(null); setError(''); }}>Cancel</button>
+              <button className="btn primary" disabled={busy} onClick={saveRole}>{busy ? 'Saving…' : 'Save role'}</button>
+            </div>
+          </div>
         </Modal>
       )}
     </div>

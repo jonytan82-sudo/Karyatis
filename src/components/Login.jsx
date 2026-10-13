@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { call, setToken } from '../api.js';
-import { POSITIONS } from '../util.js';
+import { TitleSelect } from './Roles.jsx';
 
 const setupToken = () => new URLSearchParams(window.location.search).get('setup') || '';
 const clearSetupParam = () => window.history.replaceState(null, '', window.location.pathname);
@@ -17,6 +17,11 @@ export default function Login({ onLogin }) {
   const [busy, setBusy] = useState(false);
   const [slow, setSlow] = useState(false);
   const [done, setDone] = useState(false);
+  const [catalog, setCatalog] = useState(null);
+
+  useEffect(() => {
+    if (mode === 'request' && !catalog) call('catalog').then((r) => setCatalog(r.catalog)).catch(() => {});
+  }, [mode, catalog]);
 
   useEffect(() => {
     if (!busy) { setSlow(false); return undefined; }
@@ -87,14 +92,15 @@ export default function Login({ onLogin }) {
                 <label>I am
                   <select value={req.kind} onChange={setReqF('kind')}>
                     <option value="Crew">Crew</option><option value="Captain">Captain</option><option value="Owner">Owner or manager</option>
+                    <option value="Contractor">Contractor or external technician</option>
                   </select>
                 </label>
                 {req.kind === 'Crew' && (
                   <label>Position
-                    <select value={req.position} onChange={setReqF('position')}>
-                      <option value="">Choose</option>
-                      {POSITIONS.filter((p) => p !== 'Owner' && p !== 'Captain').map((p) => <option key={p}>{p}</option>)}
-                    </select>
+                    {catalog
+                      ? <TitleSelect catalog={catalog} value={req.position} onChange={(v) => setReq({ ...req, position: v })}
+                          exclude={['Ownership & Command', 'External']} placeholder="Choose" />
+                      : <select disabled><option>Loading positions…</option></select>}
                   </label>
                 )}
                 <label><span>Vessel <span className="opt">(if you have one)</span></span><input value={req.vesselName} onChange={setReqF('vesselName')} placeholder="M/Y Karyatis" /></label>

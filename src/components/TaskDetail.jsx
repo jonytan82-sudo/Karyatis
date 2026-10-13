@@ -83,10 +83,7 @@ export default function TaskDetail({ id, onClose, onChanged, onEdit }) {
       )}
       {open && !t.canSignOff && (
         <p className="hint perm">
-          {t.department === 'engine' ? 'Signed off by the engineering department'
-            : t.department === 'deck' ? 'Signed off by the deck department'
-            : t.department === 'interior' ? 'Signed off by the interior department'
-            : 'Signed off by an officer'} or the assigned crew member. You can still add notes.
+          {t.departmentLabel ? `Signed off by ${t.departmentLabel.toLowerCase()} crew with sign-off rights` : 'Signed off by an officer'} or the assigned person. You can still add notes.
         </p>
       )}
 

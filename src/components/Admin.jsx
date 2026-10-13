@@ -3,9 +3,9 @@ import { call } from '../api.js';
 import SetupLink from './SetupLink.jsx';
 import Requests from './Requests.jsx';
 
-const BLANK = { name: '', type: 'Motor yacht', length: '', homePort: '', managerEmail: '', managerName: '', managerPosition: 'Captain' };
+const BLANK = { name: '', type: 'Motor yacht', length: '', homePort: '', managerEmail: '', managerName: '', managerPosition: 'Captain / Master' };
 
-export default function Admin({ user, onOpenVessel, onChanged }) {
+export default function Admin({ user, catalog, onOpenVessel, onChanged }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
@@ -80,12 +80,13 @@ export default function Admin({ user, onOpenVessel, onChanged }) {
                 <label>Email<input type="email" value={form.managerEmail} onChange={set('managerEmail')} /></label>
                 <label>Name<input value={form.managerName} onChange={set('managerName')} /></label>
               </div>
-              <label>Position
+              <label>Job title
                 <select value={form.managerPosition} onChange={set('managerPosition')}>
-                  <option>Captain</option><option>Owner</option>
+                  <option>Captain / Master</option><option>Staff Captain</option>
+                  <option>Yacht Owner</option><option>Yacht Manager (shore-based)</option>
                 </select>
               </label>
-              <p className="hint">They can then add the rest of the crew. Leave blank to add someone later.</p>
+              <p className="hint">Captains and Staff Captains get Command access; Owners and Managers get Owner oversight. They can then add the rest of the crew. Leave blank to add someone later.</p>
             </fieldset>
             <div className="actions left"><button className="btn primary" disabled={busy}>Create vessel</button></div>
           </form>
@@ -138,7 +139,7 @@ export default function Admin({ user, onOpenVessel, onChanged }) {
         )}
       </section>
 
-      <Requests vessels={activeVessels.map((v) => ({ id: v.id, name: v.name }))} canGrantOwner onChanged={() => { load(); onChanged(); }} />
+      <Requests vessels={activeVessels.map((v) => ({ id: v.id, name: v.name }))} catalog={catalog} allowOversight allowCommand onChanged={() => { load(); onChanged(); }} />
 
       <section className="group">
         <div className="group-head">

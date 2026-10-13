@@ -1,20 +1,9 @@
 export const SYSTEMS = [
   'Main engines', 'Generators', 'Electrical', 'Fuel', 'Plumbing & water', 'HVAC',
-  'Hull & deck', 'Steering & stabilizers', 'Navigation & electronics', 'Safety equipment',
-  'Tender & toys', 'Galley', 'Interior', 'Other',
+  'Steering & stabilizers', 'Navigation & electronics', 'AV/IT & communications',
+  'Hull & deck', 'Safety equipment', 'Tender & toys', 'Dive & watersports',
+  'Interior', 'Galley', 'Medical', 'Security', 'Other',
 ];
-
-export const POSITIONS = ['Owner', 'Captain', 'Chief Engineer', 'Engineer', 'Bosun', 'Interior', 'Deckhand'];
-
-export const POSITION_HELP = {
-  'Owner': 'Sees everything, manages crew, searches and reviews crew',
-  'Captain': 'Full control of the vessel, manages crew, searches and reviews crew',
-  'Chief Engineer': 'Creates, edits, assigns and signs off any task',
-  'Engineer': 'Schedules tasks, signs off engine-room systems',
-  'Bosun': 'Schedules tasks, signs off deck, tender and safety',
-  'Interior': 'Reports issues, signs off galley and interior',
-  'Deckhand': 'Reports issues, signs off tasks assigned to them',
-};
 
 export const AVAILABILITY = ['Available', 'Open to offers', 'Employed'];
 

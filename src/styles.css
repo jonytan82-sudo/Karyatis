@@ -608,3 +608,24 @@ a.btn { text-decoration: none; display: inline-block; color: inherit; }
 .pub-block { padding: 0.9rem 1rem 0.2rem; }
 .pv-tags .score { font-size: 0.8rem; }
 .dir-side .score { font-size: 0.8rem; }
+
+/* roles and access */
+.access-line { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 0.2rem; }
+.access-tag { font-size: 0.75rem; font-weight: 700; padding: 0.1rem 0.45rem; border-radius: 4px; background: #e6ecef; color: var(--ink-2); }
+.acc-command { background: var(--ink); color: #fff; }
+.acc-oversight { background: #f3e7cf; color: #6b4a12; }
+.acc-lead { background: #dbe8f2; color: #1d4b6e; }
+.acc-qualified { background: #e3f1e6; color: #255f30; }
+.acc-supervised { background: #eef1f3; color: var(--muted); }
+.acc-contractor { background: #ece8f6; color: var(--issue); }
+.acc-viewonly { background: #f4f4f4; color: #777; }
+.role-fields { display: flex; flex-direction: column; gap: 0.6rem; }
+.role-help { margin: 0; }
+.dept-pick { border: 1px solid var(--line); border-radius: 6px; padding: 0.6rem 0.75rem; margin: 0; }
+.dept-pick legend { font-size: 0.95rem; }
+.dept-boxes { display: flex; flex-wrap: wrap; gap: 0.4rem 1.2rem; }
+.req-approve { flex-basis: 100%; background: var(--chart); padding: 0.9rem; border-radius: 6px; }
+.titles-ref summary { cursor: pointer; font-family: var(--display); font-weight: 600; font-size: 1.25rem; }
+.title-group h4 { font-family: var(--display); font-size: 1.05rem; margin: 1rem 0 0.4rem; }
+.positions .usual { display: block; font-size: 0.8rem; color: var(--ink-2); margin-top: 0.15rem; }
+.crew-actions .btn { padding: 0.35rem 0.75rem; }

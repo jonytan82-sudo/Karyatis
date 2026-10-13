@@ -60,7 +60,7 @@ export default function App() {
     if (!s) return [];
     const seen = {};
     const list = [];
-    (s.memberships || []).forEach((m) => { seen[m.vesselId] = 1; list.push({ id: m.vesselId, name: m.vesselName, position: m.position }); });
+    (s.memberships || []).forEach((m) => { seen[m.vesselId] = 1; list.push({ id: m.vesselId, name: m.vesselName, position: m.position, accessLabel: m.accessLabel }); });
     (s.vessels || []).forEach((v) => { if (!seen[v.vesselId]) list.push({ id: v.vesselId, name: v.vesselName, position: 'CJM admin' }); });
     return list;
   }, [s]);
@@ -88,7 +88,8 @@ export default function App() {
   const { user, vessel, perms, position } = s;
   const crew = s.crew || [];
   const tabs = [];
-  if (vessel) tabs.push(['board', 'Board'], ['calendar', 'Calendar'], ['tasks', 'All tasks'], ['crew', 'Crew']);
+  if (vessel) tabs.push(['board', perms.contractor ? 'My jobs' : 'Board'], ['calendar', 'Calendar'], ['tasks', 'All tasks']);
+  if (vessel && !perms.contractor) tabs.push(['crew', 'Crew']);
   if (vessel && s.canReviewWork) tabs.push(['reviews', 'Reviews']);
   if (vesselOptions.length > 1 || (!vessel && vesselOptions.length)) tabs.push(['vessels', 'Vessels']);
   tabs.push(['profile', 'My profile']);
@@ -113,7 +114,7 @@ export default function App() {
               {vesselOptions.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
             </select>
           )}
-          <span>{user.name}{vessel && position ? `, ${position}` : ''}</span>
+          <span>{user.name}{vessel && position ? `, ${position}` : ''}{vessel && perms && perms.contractor ? ' (contractor)' : ''}</span>
           <button className="link light" onClick={logout}>Log out</button>
         </div>
       </header>
@@ -127,9 +128,9 @@ export default function App() {
             {key === 'admin' && s.pendingRequests > 0 && <span className="badge">{s.pendingRequests}</span>}
           </button>
         ))}
-        {onVesselTab && (
+        {onVesselTab && perms.canReport && (
           <button className="btn primary new-task" onClick={() => setEditing('new')}>
-            {perms.createRoutine ? 'New task' : 'Report issue'}
+            {perms.createRoutine ? 'New task' : perms.contractor ? 'Record finding' : 'Report issue'}
           </button>
         )}
       </nav>
@@ -141,13 +142,13 @@ export default function App() {
         {tab === 'calendar' && vessel && <Calendar version={version} onOpen={setOpenId} />}
         {tab === 'tasks' && vessel && <TaskList tasks={s.tasks || []} onOpen={setOpenId} />}
         {tab === 'reviews' && vessel && s.canReviewWork && <WorkReviews vessel={vessel} onChanged={refresh} />}
-        {tab === 'crew' && vessel && (
-          <Crew user={user} vessel={vessel} position={position} perms={perms} crew={crew} onChanged={refresh} />
+        {tab === 'crew' && vessel && !perms.contractor && (
+          <Crew user={user} vessel={vessel} perms={perms} crew={crew} catalog={s.catalog} onChanged={refresh} />
         )}
         {tab === 'vessels' && <Vessels options={vesselOptions} current={vessel} busy={busy} onOpen={openVessel} />}
         {tab === 'profile' && <Profile user={user} vessel={vessel} onChanged={refresh} />}
-        {tab === 'directory' && user.canSearch && <Directory />}
-        {tab === 'admin' && user.isAdmin && <Admin user={user} onOpenVessel={openVessel} onChanged={refresh} />}
+        {tab === 'directory' && user.canSearch && <Directory catalog={s.catalog} />}
+        {tab === 'admin' && user.isAdmin && <Admin user={user} catalog={s.catalog} onOpenVessel={openVessel} onChanged={refresh} />}
       </main>
 
       {openId && vessel && (

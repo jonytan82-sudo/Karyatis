@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { call } from '../api.js';
-import { AVAILABILITY, POSITIONS } from '../util.js';
+import { AVAILABILITY } from '../util.js';
+import { TitleSelect } from './Roles.jsx';
 import Avatar from './Avatar.jsx';
 import Modal from './Modal.jsx';
 import ProfileView from './ProfileView.jsx';
 import { Stars } from './Stars.jsx';
 
-export default function Directory() {
+export default function Directory({ catalog }) {
   const [q, setQ] = useState('');
   const [position, setPosition] = useState('');
   const [availability, setAvailability] = useState('');
@@ -35,10 +36,8 @@ export default function Directory() {
           placeholder="Search by name, skill, certificate, language or port, e.g. engineer MTU Spanish" />
       </div>
       <div className="filters">
-        <select value={position} onChange={(e) => setPosition(e.target.value)} aria-label="Position">
-          <option value="">Any position</option>
-          {POSITIONS.filter((p) => p !== 'Owner').map((p) => <option key={p}>{p}</option>)}
-        </select>
+        <TitleSelect catalog={catalog} value={position} onChange={setPosition} ariaLabel="Position"
+          exclude={['Yacht Owner', 'Yacht Manager (shore-based)']} placeholder="Any position" />
         <select value={availability} onChange={(e) => setAvailability(e.target.value)} aria-label="Availability">
           <option value="">Any availability</option>
           {AVAILABILITY.map((a) => <option key={a}>{a}</option>)}
