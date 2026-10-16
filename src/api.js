@@ -21,7 +21,7 @@ export async function call(action, data = {}) {
     res = await fetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action, token: getToken(), vesselId: currentVessel, ...data }),
+      body: JSON.stringify({ action, token: getToken(), vesselId: currentVessel, origin: window.location.origin, ...data }),
     });
   } catch {
     throw new Error('No connection. Check your internet and try again.');

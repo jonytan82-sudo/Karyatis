@@ -19,7 +19,9 @@ export default function SetupLink({ result, onDismiss }) {
         <>
           <p>
             Account created for <b>{result.name}</b>.{' '}
-            {result.emailed ? 'A setup email is on its way. You can also send them this link:' : 'Email could not be sent, so send them this link to set their password:'}
+            {result.emailed
+              ? <>A sign-in email with this link was sent to <b>{result.email}</b>. If it does not arrive, ask them to check spam, or send the link yourself:</>
+              : <>The sign-in email could not be sent. Send them this link yourself (text or WhatsApp works):</>}
           </p>
           <div className="link-row">
             <input readOnly value={link} onFocus={(e) => e.target.select()} aria-label="Setup link" />

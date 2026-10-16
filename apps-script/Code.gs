@@ -1,4 +1,4 @@
-/** 
+/**
  * CJM MARINE — Multi-vessel maintenance platform and crew directory
  * Google Apps Script backend, bound to one Google Sheet.
  *
@@ -14,12 +14,12 @@
  *                body: JSON.stringify({ action, token, vesselId, ... }) })
  */
 
-const SCRIPT_VERSION = '2.4 (crew operating area)';
+const SCRIPT_VERSION = '2.4.1 (sign-in link emails)';
 
 // ───────────────────────── CONFIG ─────────────────────────
 const CONFIG = {
   APP_NAME: 'CJM Marine',
-  APP_URL: '',                 // your Netlify URL, e.g. https://karyatismx.netlify.app (used in emails)
+  APP_URL: 'https://cjm-marine-1.netlify.app', // your live site address, used for links in emails
   AMBER_DAYS: 10,              // 0–10 days to due = amber, >10 = green, past due = red
   REMINDER_DAYS: [30, 10, 0],  // email milestones before the due date
   OVERDUE_REMIND_EVERY: 3,     // days between repeat emails for overdue items
@@ -295,10 +295,13 @@ function doGet() {
   return json({ ok: true, app: CONFIG.APP_NAME, version: SCRIPT_VERSION });
 }
 
+let REQUEST_ORIGIN = ''; // the website's own address, sent with each request; used only when CONFIG.APP_URL is blank
+
 function doPost(e) {
   let req;
   try { req = JSON.parse(e.postData.contents); }
   catch (err) { return json({ ok: false, error: 'Bad request' }); }
+  REQUEST_ORIGIN = /^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(String(req.origin || '')) ? String(req.origin) : '';
 
   try {
     const pub = {
@@ -496,7 +499,7 @@ function makeSetupLink(userId) {
   const token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
   const expires = new Date(Date.now() + CONFIG.SETUP_LINK_DAYS * 86400000).toISOString();
   insert('Tokens', { token, userId, purpose: 'setup', expiresAt: expires, used: 'FALSE' });
-  return (CONFIG.APP_URL ? CONFIG.APP_URL.replace(/\/$/, '') : '') + '/?setup=' + token;
+  return siteUrl() + '/?setup=' + token;
 }
 
 function findSetupToken(token) {
@@ -673,7 +676,7 @@ function addToVessel(byUser, vessel, email, name, role) {
                               joinedAt: nowIso(), leftAt: '', invitedBy: byUser.id }, roleCols));
       const link = makeSetupLink(user.id);
       const emailed = mailSetup(user, vessel, position, byUser, link);
-      return { ok: true, status: 'created', name: user.name, setupLink: link, emailed };
+      return { ok: true, status: 'created', name: user.name, email: user.email, setupLink: link, emailed };
     }
     insert('Memberships', Object.assign({ id: newId('M'), vesselId: vessel.id, userId: user.id, position, status: 'invited',
                             joinedAt: '', leftAt: '', invitedBy: byUser.id }, roleCols));
@@ -692,18 +695,20 @@ function addToVessel(byUser, vessel, email, name, role) {
   }
   const link = makeSetupLink(user.id);
   const emailed = mailSetup(user, vessel, position, byUser, link);
-  return { ok: true, status: 'created', name: user.name, setupLink: link, emailed };
+  return { ok: true, status: 'created', name: user.name, email: user.email, setupLink: link, emailed };
 }
 
+/** Emails the sign-in (set password) link. Returns false if there is no full link to send or the email failed. */
 function mailSetup(user, vessel, position, byUser, link) {
+  if (!/^https?:\/\//.test(link)) return false; // no site address known: the screen shows the link to pass on instead
   const where = vessel ? ' on <b>' + esc(vessel.name) + '</b> as <b>' + esc(position) + '</b>' : '';
-  const href = link.charAt(0) === '/' ? '' : link;
-  return sendMail(user.email, 'Your ' + CONFIG.APP_NAME + ' account',
+  return sendMail(user.email, 'Your ' + CONFIG.APP_NAME + ' account: set your password',
     '<p>Hello ' + esc(user.name) + ',</p>' +
     '<p>' + esc(byUser.name) + ' set up a ' + esc(CONFIG.APP_NAME) + ' account for you' + where + '.</p>' +
-    (href ? '<p><a href="' + href + '" style="font-size:16px">Set your password</a></p>' +
-            '<p style="color:#666">This link works for ' + CONFIG.SETUP_LINK_DAYS + ' days.</p>'
-          : '<p>Your captain will send you a link to set your password.</p>'));
+    '<p><a href="' + link + '" style="display:inline-block;background:#12324a;color:#ffffff;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:16px">Set your password</a></p>' +
+    '<p>If the button does not work, copy this address into your browser:<br><span style="word-break:break-all">' + esc(link) + '</span></p>' +
+    '<p style="color:#666">Your login email is ' + esc(user.email) + '. This link works for ' + CONFIG.SETUP_LINK_DAYS + ' days and can be used once. ' +
+    'After that, use Forgot password on the login page.</p>');
 }
 
 function inviteMember(c, user, m) {
@@ -769,7 +774,7 @@ function resendSetup(c, user, userId) {
   if (u.passwordHash) throw new Error(u.name + ' has already set up their account');
   const link = makeSetupLink(u.id);
   const emailed = mailSetup(u, c.vessel, titleOf(m.position), user, link);
-  return { ok: true, setupLink: link, emailed };
+  return { ok: true, setupLink: link, email: u.email, emailed };
 }
 
 function respondInvite(user, membershipId, accept) {
@@ -1889,8 +1894,13 @@ function audit(userId, action, taskId, details, vesselId) {
   insert('Audit', { timestamp: nowIso(), userId, action, taskId, details, vesselId: vesselId || '' });
 }
 
+/** Address of the website for links in emails: CONFIG.APP_URL, or the site the request came from. */
+function siteUrl() {
+  return String(CONFIG.APP_URL || REQUEST_ORIGIN || '').replace(/\/+$/, '');
+}
+
 function appLink() {
-  return CONFIG.APP_URL ? '<p><a href="' + CONFIG.APP_URL + '">Open ' + esc(CONFIG.APP_NAME) + '</a></p>' : '';
+  return siteUrl() ? '<p><a href="' + siteUrl() + '">Open ' + esc(CONFIG.APP_NAME) + '</a></p>' : '';
 }
 
 function sendMail(to, subject, html, attachments) {

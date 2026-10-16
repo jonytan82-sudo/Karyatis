@@ -56,7 +56,8 @@ React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
 4. Visitors who are not logged in now see the landing page at `/`. The login form is at `/login`; `/privacy` opens the privacy section.
    Setup links, sign-up links (`/?request=1`) and review links (`/?r=…`) work as before.
 5. Check `COMPANY` in `src/contact.js` (legal name and region shown on the landing page).
-6. CJM admin tab should show `Google Script version: 2.4 (crew operating area)`.
+6. CJM admin tab should show `Google Script version: 2.4.1 (sign-in link emails)`.
+7. `APP_URL` in `CONFIG` is now filled in with https://cjm-marine-1.netlify.app. If you move the site to a new address, change it there. New members get a "Set your password" button and the link as text.
 
 ## Fresh install
 Same as above on a new, empty Google Sheet. `setupPlatform()` creates the tabs and your admin account. Then create vessels from the CJM admin tab.
