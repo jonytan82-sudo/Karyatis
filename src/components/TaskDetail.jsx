@@ -1,12 +1,17 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import Modal from './Modal.jsx';
 import { call } from '../api.js';
+import Linkify from './Linkify.jsx';
+import { AttachmentList } from './Attachments.jsx';
+import { ACCEPT, MAX_FILES, prepareFile } from '../files.js';
 import { STATUS, dueText, everyText, fmtDate, fmtStamp, todayISO } from '../util.js';
 
 export default function TaskDetail({ id, onClose, onChanged, onEdit }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
+  const [files, setFiles] = useState([]);
+  const [preparing, setPreparing] = useState(false);
   const [signing, setSigning] = useState(false);
   const [sign, setSign] = useState({ performedDate: todayISO(), notes: '', resolution: '', requestReview: false, reviewMessage: '' });
   const [info, setInfo] = useState('');
@@ -41,7 +46,24 @@ export default function TaskDetail({ id, onClose, onChanged, onEdit }) {
 
   const addNote = (e) => {
     e.preventDefault();
-    run(async () => { await call('addNote', { taskId: id, text: note }); setNote(''); });
+    run(async () => {
+      await call('addNote', { taskId: id, text: note, files: files.map(({ name, mimeType, data, thumb }) => ({ name, mimeType, data, thumb })) });
+      setNote(''); setFiles([]);
+    });
+  };
+
+  const pickFiles = async (e) => {
+    const list = [...e.target.files];
+    e.target.value = '';
+    if (!list.length) return;
+    if (files.length + list.length > MAX_FILES) { setError(`Attach up to ${MAX_FILES} files per note.`); return; }
+    setPreparing(true); setError('');
+    try {
+      const ready = [];
+      for (const f of list) ready.push(await prepareFile(f));
+      setFiles((cur) => [...cur, ...ready]);
+    } catch (err) { setError(err.message); }
+    finally { setPreparing(false); }
   };
 
   if (!data) {
@@ -69,8 +91,8 @@ export default function TaskDetail({ id, onClose, onChanged, onEdit }) {
         {t.lastPerformed && <div><dt>Last done</dt><dd>{fmtDate(t.lastPerformed)} by {t.lastPerformedByName}</dd></div>}
       </dl>
 
-      {t.description && <p className="desc">{t.description}</p>}
-      {t.resolution && <div className="resolution"><b>Resolution</b><p>{t.resolution}</p></div>}
+      {t.description && <p className="desc"><Linkify text={t.description} /></p>}
+      {t.resolution && <div className="resolution"><b>Resolution</b><p><Linkify text={t.resolution} /></p></div>}
 
       {error && <div className="alert">{error}</div>}
       {info && <div className="ok">{info}</div>}
@@ -129,13 +151,34 @@ export default function TaskDetail({ id, onClose, onChanged, onEdit }) {
       <section className="block">
         <h3>Notes</h3>
         <form className="note-form" onSubmit={addNote}>
-          <textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Add a note for the crew" aria-label="New note" />
-          <button className="btn" disabled={busy || !note.trim()}>Add note</button>
+          <textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Add a note for the crew, or paste a link" aria-label="New note" />
+          <div className="note-tools">
+            <label className={`btn attach-btn ${preparing || files.length >= MAX_FILES ? 'disabled' : ''}`}>
+              <input type="file" multiple accept={ACCEPT} onChange={pickFiles} disabled={preparing || files.length >= MAX_FILES} />
+              {preparing ? 'Preparing…' : 'Attach photo or file'}
+            </label>
+            <button className="btn primary" disabled={busy || preparing || (!note.trim() && !files.length)}>{busy ? 'Saving…' : 'Add note'}</button>
+          </div>
+          {files.length > 0 && (
+            <ul className="att-pending">
+              {files.map((f, i) => (
+                <li key={i}>
+                  {f.thumb ? <img src={f.thumb} alt="" /> : <span className="att-ext">{(f.name.split('.').pop() || '').toUpperCase()}</span>}
+                  <span className="att-pname">{f.name}</span>
+                  <button type="button" className="link danger" onClick={() => setFiles(files.filter((_, j) => j !== i))} aria-label={`Remove ${f.name}`}>Remove</button>
+                </li>
+              ))}
+            </ul>
+          )}
         </form>
         {data.notes.length === 0 && <p className="empty">No notes yet.</p>}
         <ul className="notes">
           {[...data.notes].reverse().map((n) => (
-            <li key={n.id}><p>{n.text}</p><small>{n.by}, {fmtStamp(n.createdAt)}</small></li>
+            <li key={n.id}>
+              {n.text && <p><Linkify text={n.text} /></p>}
+              <AttachmentList items={n.attachments} />
+              <small>{n.by}, {fmtStamp(n.createdAt)}</small>
+            </li>
           ))}
         </ul>
       </section>
@@ -178,7 +221,7 @@ export default function TaskDetail({ id, onClose, onChanged, onEdit }) {
         <summary>Activity log ({data.history.length})</summary>
         <ul>
           {[...data.history].reverse().map((h, i) => (
-            <li key={i}><small>{fmtStamp(h.timestamp)}, {h.by}</small> {h.action}{h.details && `: ${h.details}`}</li>
+            <li key={i}><small>{fmtStamp(h.timestamp)}, {h.by}</small> {h.action}{h.details && <>: <Linkify text={h.details} /></>}</li>
           ))}
         </ul>
       </details>

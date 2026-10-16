@@ -14,7 +14,7 @@
  *                body: JSON.stringify({ action, token, vesselId, ... }) })
  */
 
-const SCRIPT_VERSION = '2.4.1 (sign-in link emails)';
+const SCRIPT_VERSION = '2.5 (photos and files on notes)';
 
 // ───────────────────────── CONFIG ─────────────────────────
 const CONFIG = {
@@ -31,6 +31,7 @@ const CONFIG = {
   BACKUP_TO: ['command'],      // access levels that get their vessel's daily backup (CJM admins always get all)
   BACKUP_KEEP_DAYS: 30,        // older backup files are moved to the Drive trash
   BACKUP_FOLDER: 'CJM Marine backups',
+  ATTACH_FOLDER: 'CJM Marine attachments', // photos and files added to notes (private to the script owner's Drive)
   REVIEW_REQUEST_DAYS: 60,     // crew can ask for a review of work done in the last N days
   REVIEW_EMAILS: true,         // email the Captain when crew ask for a review, and crew when it is answered
   CREW_RECORD_EVERY_DAYS: 7,   // each crew member gets their personal record by email this often
@@ -55,6 +56,8 @@ const SHEETS = {
                 'resolution', 'reminderLog', 'vesselId'],
   Completions: ['id', 'taskId', 'dueDate', 'performedDate', 'performedBy', 'timing', 'notes', 'loggedAt'],
   Notes:       ['id', 'taskId', 'userId', 'text', 'createdAt'],
+  Attachments: ['id', 'vesselId', 'taskId', 'noteId', 'fileId', 'name', 'mimeType', 'size', 'thumb', 'userId', 'createdAt'],
+  StoredFiles: ['id', 'data'], // staging only: file contents kept in the sheet instead of Google Drive
   TaskReviews: ['id', 'vesselId', 'taskId', 'completionId', 'userId', 'requestedAt', 'message',
                 'status', 'reviewerId', 'score', 'text', 'reviewedAt'],
   Audit:       ['timestamp', 'userId', 'action', 'taskId', 'details', 'vesselId']
@@ -332,7 +335,8 @@ function doPost(e) {
       createTask:     () => withLock(() => createTask(V(), user, req.task || {})),
       updateTask:     () => withLock(() => updateTask(V(), user, req.id, req.task || {})),
       completeTask:   () => withLock(() => completeTask(V(), user, req)),
-      addNote:        () => withLock(() => addNote(V(), user, req.taskId, req.text)),
+      addNote:        () => withLock(() => addNote(V(), user, req.taskId, req.text, req.files)),
+      getAttachment:  () => getAttachment(V(), user, req.id),
       requestTaskReview: () => withLock(() => requestTaskReview(V(), user, req.completionId, req.message, true)),
       listTaskReviews:   () => listTaskReviews(V(), user),
       submitTaskReview:  () => withLock(() => submitTaskReview(V(), user, req.reviewId, req.score, req.text)),
@@ -1469,8 +1473,11 @@ function listTasks(c, user) {
 function getTask(c, user, id) {
   const names = crewNames();
   const t = taskIn(c, id);
+  const files = {};
+  readTable('Attachments').filter(a => a.taskId === id && a.vesselId === c.vessel.id)
+    .forEach(a => (files[a.noteId] = files[a.noteId] || []).push(attachmentView(a)));
   const notes = readTable('Notes').filter(n => n.taskId === id)
-    .map(n => ({ id: n.id, text: n.text, createdAt: n.createdAt, by: names[n.userId] || n.userId }));
+    .map(n => ({ id: n.id, text: n.text, createdAt: n.createdAt, by: names[n.userId] || n.userId, attachments: files[n.id] || [] }));
   const reviews = {};
   readTable('TaskReviews').filter(r => r.taskId === id).forEach(r => reviews[r.completionId] = r);
   const hasReviewer = vesselReviewers(c.vessel.id, user.id).length > 0;
@@ -1594,13 +1601,76 @@ function completeTask(c, user, req) {
   return { ok: true, task: decorate(c, t, crewNames(), user), reviewRequested };
 }
 
-function addNote(c, user, taskId, text) {
-  if (!text || !String(text).trim()) throw new Error('Note is empty');
+function addNote(c, user, taskId, text, files) {
+  files = Array.isArray(files) ? files : [];
+  if ((!text || !String(text).trim()) && !files.length) throw new Error('Note is empty');
+  if (files.length > ATTACH_MAX_FILES) throw new Error('Attach up to ' + ATTACH_MAX_FILES + ' files per note');
+  files.forEach(checkAttachment);
   taskIn(c, taskId);
   const note = { id: newId('N'), taskId, userId: user.id, text: clip(text, 3000), createdAt: nowIso() };
   insert('Notes', note);
-  audit(user.id, 'note', taskId, note.text.slice(0, 100), c.vessel.id);
-  return { ok: true, note };
+  const saved = files.map(f => saveAttachment(c, user, taskId, note.id, f));
+  audit(user.id, 'note', taskId, (note.text.slice(0, 100) || '(no text)') +
+        (saved.length ? ' [+' + saved.length + ' file' + (saved.length > 1 ? 's' : '') + ': ' + saved.map(a => a.name).join(', ').slice(0, 120) + ']' : ''), c.vessel.id);
+  return { ok: true, note: Object.assign({}, note, { attachments: saved }) };
+}
+
+// ───────────────────────── ATTACHMENTS (photos and files on notes) ─────────────────────────
+const ATTACH_MAX_FILES = 6;
+const ATTACH_MAX_BYTES = 10 * 1024 * 1024; // 10 MB per file
+const ATTACH_TYPES = /^(image\/(jpeg|png|webp|gif|heic|heif)|application\/pdf|text\/plain|text\/csv|application\/vnd\.openxmlformats-officedocument\.(wordprocessingml\.document|spreadsheetml\.sheet)|application\/msword|application\/vnd\.ms-excel|video\/(mp4|quicktime))$/;
+
+function checkAttachment(f) {
+  if (!f || !f.name || !f.data) throw new Error('A file was empty');
+  if (!ATTACH_TYPES.test(String(f.mimeType || ''))) throw new Error('"' + clip(f.name, 60) + '" is not a supported file type. Use photos, PDF, Word, Excel, text or short videos.');
+  if (String(f.data).length > ATTACH_MAX_BYTES * 1.37) throw new Error('"' + clip(f.name, 60) + '" is larger than 10 MB');
+  if (f.thumb && !/^data:image\/(jpeg|png|webp);base64,/.test(f.thumb)) throw new Error('Bad preview image');
+}
+
+function saveAttachment(c, user, taskId, noteId, f) {
+  const name = clip(String(f.name).replace(/[\\/:*?"<>|]+/g, '_'), 120);
+  const mimeType = String(f.mimeType);
+  const bytes = Utilities.base64Decode(String(f.data));
+  if (bytes.length > ATTACH_MAX_BYTES) throw new Error('"' + name + '" is larger than 10 MB');
+  const fileId = storeFile(c.vessel, name, mimeType, String(f.data), bytes);
+  const thumb = f.thumb && String(f.thumb).length < 40000 ? String(f.thumb) : '';
+  const a = { id: newId('A'), vesselId: c.vessel.id, taskId, noteId, fileId, name, mimeType, size: String(bytes.length),
+              thumb, userId: user.id, createdAt: nowIso() };
+  insert('Attachments', a);
+  return attachmentView(a);
+}
+
+function attachmentView(a) {
+  return { id: a.id, name: a.name, mimeType: a.mimeType, size: Number(a.size) || 0, thumb: a.thumb || '' };
+}
+
+/** Saves file contents. Production: a private file in Google Drive. Staging: a row in StoredFiles (Drive is off). */
+function storeFile(vessel, name, mimeType, b64, bytes) {
+  if (CONFIG.STAGING) {
+    const id = newId('F');
+    insert('StoredFiles', { id, data: b64 });
+    return 'stg:' + id;
+  }
+  const root = (() => { const it = DriveApp.getFoldersByName(CONFIG.ATTACH_FOLDER); return it.hasNext() ? it.next() : DriveApp.createFolder(CONFIG.ATTACH_FOLDER); })();
+  const sub = (() => { const it = root.getFoldersByName(vessel.name); return it.hasNext() ? it.next() : root.createFolder(vessel.name); })();
+  return sub.createFile(Utilities.newBlob(bytes, mimeType, name)).getId();
+}
+
+function readFile(fileId) {
+  if (String(fileId).indexOf('stg:') === 0) {
+    const row = readTable('StoredFiles').find(r => r.id === fileId.slice(4));
+    if (!row) throw new Error('File not found');
+    return row.data;
+  }
+  return Utilities.base64Encode(DriveApp.getFileById(fileId).getBlob().getBytes());
+}
+
+/** Returns a file to someone who can see the task it belongs to. */
+function getAttachment(c, user, id) {
+  const a = readTable('Attachments').find(x => x.id === id && x.vesselId === c.vessel.id);
+  if (!a) throw new Error('File not found');
+  taskIn(c, a.taskId); // same visibility as the task (contractors: own jobs only)
+  return { ok: true, name: a.name, mimeType: a.mimeType, data: readFile(a.fileId) };
 }
 
 function calendar(c, from, to) {
@@ -1919,7 +1989,7 @@ const TABLE_CACHE = {}; // lives for one request only
 
 const HEADERS_CHECKED = {};
 
-const AUTO_TABS = ['TaskReviews'];
+const AUTO_TABS = ['TaskReviews', 'Attachments', 'StoredFiles'];
 
 function sheet(name) {
   let sh = SpreadsheetApp.getActive().getSheetByName(name);
