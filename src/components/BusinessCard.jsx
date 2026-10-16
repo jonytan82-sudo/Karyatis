@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { printCard } from '../contact.js';
 import QRCode from 'qrcode';
 import Avatar from './Avatar.jsx';
 
@@ -32,6 +33,7 @@ export default function BusinessCard({ profile, onEnableSharing }) {
   const reviewsUrl = profile.shareId ? `${window.location.origin}/?r=${profile.shareId}` : '';
   const hasContact = !!(profile.phone || profile.email);
   const [codes, setCodes] = useState({ contact: '', reviews: '' });
+  const sides = useRef(null);
 
   useEffect(() => {
     let live = true;
@@ -53,7 +55,7 @@ export default function BusinessCard({ profile, onEnableSharing }) {
 
   return (
     <div className="bcard-wrap">
-      <div className="bcard-sides">
+      <div className="bcard-sides" ref={sides}>
         <div className="bcard">
           <div className="bcard-top">
             <Avatar name={profile.name} photo={profile.photo} size={64} />
@@ -86,7 +88,7 @@ export default function BusinessCard({ profile, onEnableSharing }) {
 
       <div className="actions left">
         <button className="btn primary" onClick={download}>Save contact (.vcf)</button>
-        <button className="btn" onClick={() => window.print()}>Print card</button>
+        <button className="btn" onClick={() => printCard(sides.current)}>Print card</button>
         {reviewsUrl && <a className="btn" href={reviewsUrl} target="_blank" rel="noreferrer">Open reviews page</a>}
       </div>
 

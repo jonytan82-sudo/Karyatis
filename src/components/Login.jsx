@@ -1,16 +1,35 @@
 import { useEffect, useState } from 'react';
 import { call, setToken } from '../api.js';
 import { TitleSelect } from './Roles.jsx';
+import { SUPPORT, contactVcard, downloadVcard } from '../contact.js';
+import Logo from './Logo.jsx';
+import Hero from './Hero.jsx';
+
+function ContactUs() {
+  return (
+    <div className="contact-us">
+      <b>Contact us</b>
+      <a href={`tel:${SUPPORT.phone}`}>{SUPPORT.phoneDisplay}</a>
+      <a href={`mailto:${SUPPORT.email}`}>{SUPPORT.email}</a>
+      <button type="button" className="link" onClick={() => downloadVcard(contactVcard({ url: window.location.origin }), 'CJM-Marine-Support.vcf')}>
+        Save contact
+      </button>
+    </div>
+  );
+}
 
 const setupToken = () => new URLSearchParams(window.location.search).get('setup') || '';
+const params = new URLSearchParams(window.location.search);
+const AS = { owner: 'Owner', captain: 'Captain', crew: 'Crew', contractor: 'Contractor' };
+const startKind = AS[(params.get('as') || '').toLowerCase()] || 'Crew';
 const clearSetupParam = () => window.history.replaceState(null, '', window.location.pathname);
 
 export default function Login({ onLogin }) {
-  const [mode, setMode] = useState(setupToken() ? 'setup' : 'login'); // login | forgot | code | request | setup
+  const [mode, setMode] = useState(setupToken() ? 'setup' : params.get('request') ? 'request' : 'login'); // login | forgot | code | request | setup
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
-  const [req, setReq] = useState({ name: '', kind: 'Crew', position: '', vesselName: '', message: '' });
+  const [req, setReq] = useState({ name: '', kind: startKind, position: '', vesselName: '', message: '' });
   const [setupName, setSetupName] = useState('');
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
@@ -59,7 +78,7 @@ export default function Login({ onLogin }) {
   };
 
   const titles = {
-    login: 'Vessel maintenance and crew',
+    login: 'Log in to your vessel',
     forgot: 'Reset your password',
     code: 'Enter your reset code',
     request: 'Request an account',
@@ -74,7 +93,7 @@ export default function Login({ onLogin }) {
   return (
     <div className="login">
       <div className="login-panel">
-        <div className="login-name">CJM Marine</div>
+        <Logo size="md" />
         <p className="login-sub">{titles[mode]}</p>
         {done ? (
           <div className="ok">{info}</div>
@@ -138,7 +157,9 @@ export default function Login({ onLogin }) {
         {mode === 'request' && !done && (
           <p className="hint">Your captain or CJM reviews requests. If you already have an account from another vessel, log in instead and ask the captain to invite you.</p>
         )}
+        <ContactUs />
       </div>
+      <div className="login-hero"><Hero line1="Real people." line2="Real work." foot="Simplify. Organize. Perform." /></div>
     </div>
   );
 }
