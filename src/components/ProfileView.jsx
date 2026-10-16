@@ -55,6 +55,7 @@ export default function ProfileView({ userId, data: initial }) {
           <p className="pv-meta">
             {[p.location, p.yearsExperience && `${p.yearsExperience} years at sea`, p.languages].filter(Boolean).join(', ')}
           </p>
+          {p.operatingArea && <p className="pv-meta pv-area">Operates in {p.operatingArea}</p>}
           <div className="pv-tags">
             {p.availability && <span className={`pill av-${p.availability.replace(/\s+/g, '-').toLowerCase()}`}>{p.availability}</span>}
             <Stars value={data.summary.rating} count={data.summary.reviewCount} />

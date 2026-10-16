@@ -33,7 +33,7 @@ export default function Directory({ catalog }) {
     <div className="directory">
       <div className="search-bar">
         <input type="search" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search crew"
-          placeholder="Search by name, skill, certificate, language or port, e.g. engineer MTU Spanish" />
+          placeholder="Search by name, skill, certificate, language, port or region, e.g. engineer MTU Bahamas" />
       </div>
       <div className="filters">
         <TitleSelect catalog={catalog} value={position} onChange={setPosition} ariaLabel="Position"
@@ -59,6 +59,7 @@ export default function Directory({ catalog }) {
                 <span className="dir-meta">
                   {[r.location, r.yearsExperience && `${r.yearsExperience} yrs`, r.certCount ? `${r.certCount} certs` : ''].filter(Boolean).join(', ')}
                 </span>
+                {r.operatingArea && <span className="dir-meta">Operates in {r.operatingArea}</span>}
               </span>
               <span className="dir-side">
                 {r.availability && <span className={`pill av-${r.availability.replace(/\s+/g, '-').toLowerCase()}`}>{r.availability}</span>}

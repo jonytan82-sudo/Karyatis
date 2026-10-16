@@ -16,6 +16,7 @@ import Invites from './components/Invites.jsx';
 import Logo from './components/Logo.jsx';
 import Icon from './components/Icons.jsx';
 import Hero from './components/Hero.jsx';
+import Landing from './components/Landing.jsx';
 
 const VESSEL_TABS = ['board', 'calendar', 'tasks', 'crew', 'reviews'];
 const ICONS = { board: 'gauge', calendar: 'calendar', tasks: 'check', crew: 'crew', reviews: 'star', vessels: 'yacht', profile: 'user', directory: 'search', admin: 'shield' };
@@ -122,8 +123,15 @@ export default function App() {
     setS(null);
   }
 
-  if (checking) return <div className="splash"><Logo variant="light" size="lg" /><small>Loading…</small></div>;
-  if (!s) return <Login onLogin={(r) => load(r)} />;
+  if (checking) return <div className="splash"><Logo size="lg" /><small>Loading…</small></div>;
+  if (!s) {
+    // Public landing page for visitors; the login form lives at /login (and opens for setup or sign-up links).
+    const path = window.location.pathname.replace(/\/+$/, '');
+    const q = new URLSearchParams(window.location.search);
+    const wantsLogin = path === '/login' || q.has('setup') || q.has('request');
+    if (!wantsLogin) return <Landing focus={path === '/privacy' ? 'privacy' : ''} />;
+    return <Login onLogin={(r) => { if (path === '/login') window.history.replaceState(null, '', '/'); load(r); }} />;
+  }
 
   const { user, vessel, perms, position } = s;
   const crew = s.crew || [];
@@ -268,7 +276,7 @@ export default function App() {
     <div className="app">
       <header className="masthead">
         <div className="vessel">
-          <span className="brand"><span className="lw-cjm">CJM</span> <span className="lw-marine">Marine</span></span>
+          <span className="brand"><Logo size="sm" /></span>
           {vessel
             ? <span className="vessel-name">{vessel.name}</span>
             : <span className="vessel-sub">Maintenance and crew</span>}

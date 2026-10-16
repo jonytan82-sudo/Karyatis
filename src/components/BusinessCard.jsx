@@ -6,7 +6,7 @@ import Avatar from './Avatar.jsx';
 const esc = (s) => String(s || '').replace(/[\\,;]/g, (m) => '\\' + m).replace(/\n/g, '\\n');
 
 /** vCard 3.0. forQr keeps it short so the printed code stays easy to scan. */
-function vcard(p, org, withPhoto, forQr) {
+function vcard(p, withPhoto, forQr) {
   const parts = p.name.trim().split(/\s+/);
   const last = parts.length > 1 ? parts.pop() : '';
   return [
@@ -14,10 +14,10 @@ function vcard(p, org, withPhoto, forQr) {
     `N:${esc(last)};${esc(parts.join(' '))};;;`,
     `FN:${esc(p.name)}`,
     p.headline && `TITLE:${esc(p.headline)}`,
-    org && `ORG:${esc(org)}`,
     p.phone && `TEL;TYPE=CELL:${esc(p.phone)}`,
     p.email && `EMAIL;TYPE=INTERNET:${esc(p.email)}`,
     !forQr && p.location && `ADR;TYPE=HOME:;;;${esc(p.location)};;;`,
+    !forQr && p.operatingArea && `NOTE:${esc('Operates in ' + p.operatingArea)}`,
     !forQr && p.reviewsUrl && `URL:${p.reviewsUrl}`,
     withPhoto && p.photo && `PHOTO;ENCODING=b;TYPE=JPEG:${p.photo.split(',')[1]}`,
     'END:VCARD',
@@ -27,9 +27,9 @@ function vcard(p, org, withPhoto, forQr) {
 const qr = (text, level = 'M') => QRCode.toDataURL(text, { errorCorrectionLevel: level, margin: 1, width: 360, color: { dark: '#12324a', light: '#ffffff' } });
 
 export default function BusinessCard({ profile, onEnableSharing }) {
+  // The card never names vessels (owners' privacy). Role comes from the headline or current job title only.
   const current = (profile.vesselHistory || []).find((v) => v.current);
   const role = profile.headline || (current ? current.position : '');
-  const org = current ? current.vesselName : '';
   const reviewsUrl = profile.shareId ? `${window.location.origin}/?r=${profile.shareId}` : '';
   const hasContact = !!(profile.phone || profile.email);
   const [codes, setCodes] = useState({ contact: '', reviews: '' });
@@ -38,14 +38,14 @@ export default function BusinessCard({ profile, onEnableSharing }) {
   useEffect(() => {
     let live = true;
     Promise.all([
-      hasContact ? qr(vcard(profile, org, false, true), 'L') : Promise.resolve(''),
+      hasContact ? qr(vcard(profile, false, true), 'L') : Promise.resolve(''),
       reviewsUrl ? qr(reviewsUrl) : Promise.resolve(''),
     ]).then(([contact, reviews]) => live && setCodes({ contact, reviews })).catch(() => {});
     return () => { live = false; };
-  }, [profile, org, reviewsUrl, hasContact]);
+  }, [profile, reviewsUrl, hasContact]);
 
   const download = () => {
-    const blob = new Blob([vcard({ ...profile, reviewsUrl }, org, true)], { type: 'text/vcard' });
+    const blob = new Blob([vcard({ ...profile, reviewsUrl }, true)], { type: 'text/vcard' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = profile.name.replace(/[^\w]+/g, '-') + '.vcf';
@@ -62,7 +62,7 @@ export default function BusinessCard({ profile, onEnableSharing }) {
             <div>
               <div className="bcard-name">{profile.name}</div>
               {role && <div className="bcard-role">{role}</div>}
-              {org && <div className="bcard-org">{org}</div>}
+              {profile.operatingArea && <div className="bcard-org">Operates in {profile.operatingArea}</div>}
             </div>
           </div>
           <div className="bcard-contact">

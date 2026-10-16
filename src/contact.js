@@ -7,6 +7,18 @@ export const SUPPORT = {
   email: 'support@cjm-aero.com',
 };
 
+// Shown on the public landing page. Confirm these before publishing.
+export const COMPANY = {
+  name: 'CJM Marine',
+  parent: 'Carballo Jet Management LLC', // legal entity CJM Marine operates under (please confirm)
+  region: 'Florida, USA',
+  site: 'https://cjm-marine-1.netlify.app',
+};
+
+// Amazon Associates disclosure. Amazon requires it to be shown clearly wherever its links appear.
+export const AMAZON_DISCLOSURE = 'As an Amazon Associate, CJM Marine earns from qualifying purchases.';
+export const SHOW_AMAZON_DISCLOSURE = true;
+
 const esc = (s) => String(s || '').replace(/[\\,;]/g, (m) => '\\' + m).replace(/\n/g, '\\n');
 
 /** vCard 3.0 for a person or for the support desk. */

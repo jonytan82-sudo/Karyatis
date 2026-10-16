@@ -14,7 +14,7 @@
  *                body: JSON.stringify({ action, token, vesselId, ... }) })
  */
 
-const SCRIPT_VERSION = '2.3 (crew titles and access levels)';
+const SCRIPT_VERSION = '2.4 (crew operating area)';
 
 // ───────────────────────── CONFIG ─────────────────────────
 const CONFIG = {
@@ -41,7 +41,7 @@ const SHEETS = {
   Users:       ['id', 'name', 'email', 'passwordHash', 'salt', 'active', 'isAdmin', 'createdAt'],
   Profiles:    ['userId', 'photo', 'headline', 'bio', 'location', 'yearsExperience', 'availability',
                 'phone', 'showContact', 'languages', 'certifications', 'experience', 'updatedAt',
-                'shareReviews', 'shareId'],
+                'shareReviews', 'shareId', 'operatingArea'],
   Vessels:     ['id', 'name', 'type', 'length', 'homePort', 'active', 'createdAt', 'createdBy'],
   Memberships: ['id', 'vesselId', 'userId', 'position', 'status', 'joinedAt', 'leftAt', 'invitedBy', 'access', 'departments'],
   Sessions:    ['token', 'userId', 'expiresAt'],
@@ -954,6 +954,7 @@ function getProfile(viewer, userId) {
       email: showContact ? target.email : '',
       phone: showContact ? (p.phone || '') : '',
       photo: p.photo || '', headline: p.headline || '', bio: p.bio || '', location: p.location || '',
+      operatingArea: p.operatingArea || '',
       yearsExperience: p.yearsExperience || '', availability: p.availability || '',
       showContact: isTrue(p.showContact), languages: p.languages || '',
       certifications: parseList(p.certifications), experience: parseList(p.experience),
@@ -988,7 +989,7 @@ function saveProfile(user, p) {
     if (photo.length > 45000) throw new Error('Photo is too large');
     row.photo = photo;
   }
-  ['headline', 'location', 'phone', 'languages'].forEach(k => { if (p[k] !== undefined) row[k] = clip(p[k], 150); });
+  ['headline', 'location', 'operatingArea', 'phone', 'languages'].forEach(k => { if (p[k] !== undefined) row[k] = clip(p[k], 150); });
   if (p.bio !== undefined) row.bio = clip(p.bio, 2000);
   if (p.yearsExperience !== undefined) row.yearsExperience = clip(p.yearsExperience, 3).replace(/\D/g, '');
   if (p.availability !== undefined) row.availability = AVAILABILITY.indexOf(p.availability) !== -1 ? p.availability : '';
@@ -1036,11 +1037,12 @@ function searchCrew(viewer, req) {
     const positions = ms.map(m => m.position).filter((x, i, a) => a.indexOf(x) === i);
     const certs = parseList(p.certifications).map(x => x.name);
     const exp = parseList(p.experience).map(x => [x.vessel, x.position, x.notes].join(' '));
-    const text = [u.name, p.headline, p.bio, p.location, p.languages, p.availability, positions.join(' '),
+    const text = [u.name, p.headline, p.bio, p.location, p.operatingArea, p.languages, p.availability, positions.join(' '),
                   certs.join(' '), exp.join(' '), ms.map(m => m.vessel).join(' ')].join(' ').toLowerCase();
     const rs = reviews[u.id] || [];
     return {
       userId: u.id, name: u.name, photo: p.photo || '', headline: p.headline || '', location: p.location || '',
+      operatingArea: p.operatingArea || '',
       availability: p.availability || '', yearsExperience: p.yearsExperience || '',
       positions, currentPosition: (ms.find(m => m.active) || {}).position || '',
       certCount: certs.length, rating: rs.length ? Math.round(rs.reduce((a, b) => a + b, 0) / rs.length * 10) / 10 : 0,
@@ -1110,7 +1112,7 @@ function publicReviews(shareId) {
   return {
     ok: true,
     name: user.name, photo: p.photo || '', headline: p.headline || (current ? current.position : ''),
-    location: p.location || '', yearsExperience: p.yearsExperience || '',
+    location: p.location || '', operatingArea: p.operatingArea || '', yearsExperience: p.yearsExperience || '',
     summary: ratingSummary(user.id), reviews,
     performance: performanceOf(user.id, false)
   };
@@ -1269,7 +1271,7 @@ function buildCrewRecord(user, stamp) {
   const tabs = [
     ['Profile', ['Field', 'Value'], [
       ['Name', user.name], ['Email', user.email], ['Phone', p.phone || ''], ['Headline', p.headline || ''],
-      ['Based in', p.location || ''], ['Years at sea', p.yearsExperience || ''], ['Languages', p.languages || ''],
+      ['Based in', p.location || ''], ['Operates in', p.operatingArea || ''], ['Years at sea', p.yearsExperience || ''], ['Languages', p.languages || ''],
       ['Availability', p.availability || ''], ['Sea time on CJM Marine', fmtDays(totalDays)],
       ['Work reviews', perf.count ? perf.average + ' / 10 average from ' + perf.count : 'None yet'],
       ['Captain recommendations', stars.count ? stars.average + ' / 5 from ' + stars.count : 'None yet'],

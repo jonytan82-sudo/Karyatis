@@ -60,7 +60,7 @@ export default function Profile({ user, onChanged }) {
   const take = (r) => {
     setData(r);
     const p = r.profile;
-    setF({ ...p, certifications: p.certifications.length ? p.certifications : [], experience: p.experience });
+    setF({ ...p, operatingArea: p.operatingArea || '', certifications: p.certifications.length ? p.certifications : [], experience: p.experience });
   };
 
   useEffect(() => { call('getMyProfile').then(take).catch((e) => setError(e.message)); }, []);
@@ -85,7 +85,7 @@ export default function Profile({ user, onChanged }) {
     setBusy(true); setError(''); setMsg('');
     try {
       const r = await call('saveProfile', { profile: {
-        name: f.name, photo: f.photo, headline: f.headline, bio: f.bio, location: f.location,
+        name: f.name, photo: f.photo, headline: f.headline, bio: f.bio, location: f.location, operatingArea: f.operatingArea,
         yearsExperience: f.yearsExperience, availability: f.availability, phone: f.phone,
         showContact: f.showContact, shareReviews: f.shareReviews, languages: f.languages,
         certifications: f.certifications, experience: f.experience,
@@ -139,6 +139,9 @@ export default function Profile({ user, onChanged }) {
             <label>Based in<input value={f.location} onChange={set('location')} placeholder="Fort Lauderdale, FL" /></label>
             <label>Years at sea<input inputMode="numeric" value={f.yearsExperience} onChange={set('yearsExperience')} /></label>
           </div>
+          <label><span>Operates in <span className="opt">(regions you work in)</span></span>
+            <input value={f.operatingArea} onChange={set('operatingArea')} maxLength={150} placeholder="Florida, Bahamas, Caribbean, Mediterranean" />
+          </label>
           <div className="two">
             <label>Availability
               <select value={f.availability} onChange={set('availability')}>

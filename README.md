@@ -49,6 +49,15 @@ React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
 4. Existing crew keep exactly the rights they had (old Captain → Command, Owner → Owner oversight, Chief Engineer → Department lead for all departments, Engineer → lead engineering, Bosun → lead deck, Interior → qualified interior and galley, Deckhand → supervised).
 5. CJM admin tab should show `Google Script version: 2.3 (crew titles and access levels)`.
 
+## Upgrade to 2.4 (operating area, public landing page)
+1. Paste the new `apps-script/Code.gs` into Apps Script and save. The Profiles tab gets an `operatingArea` column automatically.
+2. Deploy → Manage deployments → pencil → Version: **New version** → Deploy.
+3. Upload this folder to GitHub (include the `public/landing` images). Netlify rebuilds on its own.
+4. Visitors who are not logged in now see the landing page at `/`. The login form is at `/login`; `/privacy` opens the privacy section.
+   Setup links, sign-up links (`/?request=1`) and review links (`/?r=…`) work as before.
+5. Check `COMPANY` in `src/contact.js` (legal name and region shown on the landing page).
+6. CJM admin tab should show `Google Script version: 2.4 (crew operating area)`.
+
 ## Fresh install
 Same as above on a new, empty Google Sheet. `setupPlatform()` creates the tabs and your admin account. Then create vessels from the CJM admin tab.
 

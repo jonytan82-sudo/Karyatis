@@ -158,6 +158,7 @@ export default function Login({ onLogin }) {
           <p className="hint">Your captain or CJM reviews requests. If you already have an account from another vessel, log in instead and ask the captain to invite you.</p>
         )}
         <ContactUs />
+        <a className="login-about" href="/">About CJM Marine</a>
       </div>
       <div className="login-hero"><Hero line1="Real people." line2="Real work." foot="Simplify. Organize. Perform." /></div>
     </div>

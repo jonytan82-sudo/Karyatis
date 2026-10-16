@@ -27,6 +27,7 @@ export default function PublicReviews({ shareId }) {
               <h1>{data.name}</h1>
               {data.headline && <p className="pv-headline">{data.headline}</p>}
               <p className="pv-meta">{[data.location, data.yearsExperience && `${data.yearsExperience} years at sea`].filter(Boolean).join(', ')}</p>
+              {data.operatingArea && <p className="pv-meta">Operates in {data.operatingArea}</p>}
               <div className="pub-score">
                 <span className="pub-num">{data.summary.reviewCount ? data.summary.rating.toFixed(1) : '–'}</span>
                 <Stars value={data.summary.rating} count={data.summary.reviewCount} />
