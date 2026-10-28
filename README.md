@@ -68,6 +68,17 @@ React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
 5. Web addresses typed or pasted in notes, descriptions, resolutions and the activity log are clickable.
 6. CJM admin tab should show `Google Script version: 2.5 (photos and files on notes)`.
 
+## Upgrade to 2.8 (delete accounts)
+1. Paste the new `apps-script/Code.gs`, save, then Deploy → Manage deployments → pencil → **New version** → Deploy.
+2. Upload this folder to GitHub.
+3. CJM admin → People now has **Delete account** next to Deactivate. You type the person's email to confirm.
+   It erases their name, email, password, sessions, profile (photo, phone, certificates, experience), vessel memberships, invitations,
+   account and yacht requests, reviews about them and their work reviews. Their open tasks go back to "Anyone".
+   Vessel history they signed (sign-offs, notes, files, activity log) stays on the yacht and shows "Deleted user". The same email can join again later.
+   You cannot delete yourself or the only CJM admin. Deactivate is still there for a reversible block.
+   Old crew-record and backup files already in Google Drive are not touched; delete those in Drive if needed.
+4. CJM admin tab should show `Google Script version: 2.8 (delete accounts)`.
+
 ## Upgrade to 2.7 (yacht requests)
 1. Paste the new `apps-script/Code.gs`, save, then Deploy → Manage deployments → pencil → **New version** → Deploy. The VesselRequests tab is created automatically.
 2. Upload this folder to GitHub.

@@ -14,7 +14,7 @@
  *                body: JSON.stringify({ action, token, vesselId, ... }) })
  */
 
-const SCRIPT_VERSION = '2.7 (yacht requests)';
+const SCRIPT_VERSION = '2.8 (delete accounts)';
 
 // ───────────────────────── CONFIG ─────────────────────────
 const CONFIG = {
@@ -374,6 +374,7 @@ function doPost(e) {
       createVessel:   () => { requireAdmin(user); return withLock(() => createVessel(user, req.vessel || {})); },
       updateVessel:   () => { requireAdmin(user); return withLock(() => updateVessel(user, req.id, req.vessel || {})); },
       setUserActive:  () => { requireAdmin(user); return withLock(() => setUserActive(user, req.userId, req.active)); },
+      deleteUser:     () => { requireAdmin(user); return withLock(() => deleteUser(user, req.userId, req.confirmEmail)); },
       sendBackupNow:  () => { requireAdmin(user); return sendBackupNow(user, req.backupVesselId); },
 
       // new yacht requests from owners and captains
@@ -1487,7 +1488,7 @@ function adminOverview() {
   });
   return {
     ok: true, vessels,
-    users: users.map(u => ({
+    users: users.filter(u => !isDeletedUser(u)).map(u => ({
       id: u.id, name: u.name, email: u.email, active: isTrue(u.active), isAdmin: isTrue(u.isAdmin),
       needsSetup: !u.passwordHash,
       vessels: ms.filter(m => m.userId === u.id && m.status === 'active').map(m => (vName[m.vesselId] || '?') + ', ' + titleOf(m.position) + ' (' + permsOfMember(m).accessLabel + ')')
@@ -1531,7 +1532,7 @@ function updateVessel(user, id, v) {
 function setUserActive(user, userId, active) {
   if (userId === user.id) throw new Error('You cannot deactivate yourself');
   const u = readTable('Users').find(x => x.id === userId);
-  if (!u) throw new Error('User not found');
+  if (!u || isDeletedUser(u)) throw new Error('User not found');
   u.active = active ? 'TRUE' : 'FALSE';
   update('Users', u._row, u);
   if (!active) endSessionsFor(userId);
@@ -2503,4 +2504,61 @@ function declineVesselRequest(admin, id, note) {
     '<p>Hello ' + esc(requester.name.split(' ')[0]) + ',</p><p>CJM Marine could not add <b>' + esc(r.name) + '</b> right now.</p>' +
     (r.note ? '<p>“' + esc(r.note) + '”</p>' : '') + '<p>Questions? Email support@cjm-aero.com.</p>');
   return { ok: true };
+}
+
+// ═════════════════════════ DELETE ACCOUNT (CJM admin) ═════════════════════════
+/**
+ * Erases a person's account and personal data: name, email, password, sessions, profile (photo, phone,
+ * certificates, experience), vessel memberships, invitations, account and yacht requests, reviews about
+ * them and their work reviews. Vessel maintenance history (tasks, sign-offs, notes, files, activity log)
+ * is kept for the yacht's records and now shows "Deleted user". The same email can sign up again later.
+ */
+const DELETED_NAME = 'Deleted user';
+function isDeletedUser(u) { return /@deleted\.invalid$/.test(String(u.email || '')); }
+
+function deleteRowsWhere(name, test) {
+  const rows = readTable(name).filter(test).sort((a, b) => b._row - a._row);
+  rows.forEach(r => sheet(name).deleteRow(r._row));
+  delete TABLE_CACHE[name];
+  return rows.length;
+}
+
+function deleteUser(admin, userId, confirmEmail) {
+  if (userId === admin.id) throw new Error('You cannot delete your own account');
+  const u = readTable('Users').find(x => x.id === userId);
+  if (!u || isDeletedUser(u)) throw new Error('Account not found');
+  if (String(confirmEmail || '').toLowerCase().trim() !== u.email) throw new Error('Type their email address exactly to confirm');
+  if (isTrue(u.isAdmin) && readTable('Users').filter(x => isTrue(x.isAdmin) && isTrue(x.active) && !isDeletedUser(x)).length <= 1) {
+    throw new Error('This is the only CJM admin. Make someone else an admin first.');
+  }
+  // Vessels this person is the only captain/owner of (shown to the admin afterwards)
+  const ms = readTable('Memberships').filter(m => m.status === 'active');
+  const vName = {}; readTable('Vessels').forEach(v => vName[v.id] = v.name);
+  const orphaned = ms.filter(m => m.userId === userId && permsOfMember(m).manageCrew)
+    .filter(m => !ms.some(o => o.vesselId === m.vesselId && o.userId !== userId && permsOfMember(o).manageCrew))
+    .map(m => vName[m.vesselId]).filter(Boolean);
+  const email = u.email;
+
+  endSessionsFor(userId);
+  const counts = {
+    sessions: deleteRowsWhere('Sessions', s => s.userId === userId),
+    links: deleteRowsWhere('Tokens', t => t.userId === userId),
+    profile: deleteRowsWhere('Profiles', p => p.userId === userId),
+    memberships: deleteRowsWhere('Memberships', m => m.userId === userId),
+    reviewsAbout: deleteRowsWhere('Reviews', r => r.userId === userId),
+    workReviews: deleteRowsWhere('TaskReviews', r => r.userId === userId),
+    accountRequests: deleteRowsWhere('Requests', r => r.email === email),
+    yachtRequests: deleteRowsWhere('VesselRequests', r => r.userId === userId)
+  };
+  // Open tasks assigned to them go back to "Anyone"
+  readTable('Tasks').filter(t => t.assignedTo === userId && t.state === 'Open').forEach(t => { t.assignedTo = ''; update('Tasks', t._row, t); });
+  // Keep the row as an anonymous placeholder so the vessel history still reads "Deleted user"
+  const row = readTable('Users').find(x => x.id === userId);
+  row.name = DELETED_NAME; row.email = 'deleted-' + userId.toLowerCase() + '@deleted.invalid';
+  row.passwordHash = ''; row.salt = ''; row.active = 'FALSE'; row.isAdmin = 'FALSE';
+  update('Users', row._row, row);
+  PropertiesService.getScriptProperties().setProperty('cr_' + userId, '');
+  audit(admin.id, 'deleteUser', '', 'Account ' + userId + ' deleted', '');
+  return { ok: true, counts, orphaned,
+           message: 'Account deleted.' + (orphaned.length ? ' ' + orphaned.join(', ') + ' now has no captain or owner on CJM Marine.' : '') };
 }

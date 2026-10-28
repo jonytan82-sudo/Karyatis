@@ -897,3 +897,12 @@ a.btn { text-decoration: none; display: inline-block; color: inherit; }
 .note-card p { margin: 0; }
 .yacht-req .form.card, .yr-admin .form { display: flex; flex-direction: column; gap: 0.8rem; }
 .yr-admin .form.three { display: grid; }
+
+/* ── Delete account ── */
+.delete-box { flex-basis: 100%; background: #fff5f4; border: 1px solid #f1b8b2; border-radius: 8px; padding: 0.8rem 0.9rem; display: grid; gap: 0.6rem; margin-top: 0.4rem; }
+.delete-box p { margin: 0; font-size: 0.92rem; }
+.delete-box label { display: flex; flex-direction: column; gap: 0.3rem; font-weight: 500; font-size: 0.9rem; }
+.delete-box input { border: 1px solid var(--line); border-radius: 6px; padding: 0.5rem 0.6rem; background: var(--paper); }
+.btn.danger-btn { background: var(--red); border-color: var(--red); color: #fff; }
+.btn.danger-btn:disabled { opacity: 0.45; }
+.admin .crew-list li { flex-wrap: wrap; }

@@ -17,6 +17,7 @@ export default function Admin({ user, catalog, onOpenVessel, onChanged }) {
   const [filter, setFilter] = useState('');
   const [busy, setBusy] = useState(false);
   const [server, setServer] = useState('');
+  const [deleting, setDeleting] = useState(null); // { id, name, email, typed }
 
   const load = () => call('adminOverview').then((r) => { setData(r); setError(''); }).catch((e) => setError(e.message));
   useEffect(() => {
@@ -164,7 +165,24 @@ export default function Admin({ user, catalog, onOpenVessel, onChanged }) {
                     if (u.active && !window.confirm(`Deactivate ${u.name}? They can no longer log in on any vessel.`)) return;
                     run(() => call('setUserActive', { userId: u.id, active: !u.active }), `${u.name} ${u.active ? 'deactivated' : 'reactivated'}.`);
                   }}>{u.active ? 'Deactivate' : 'Reactivate'}</button>
+                  <button className="link danger" onClick={() => setDeleting({ id: u.id, name: u.name, email: u.email, typed: '' })}>Delete account</button>
                 </span>
+              )}
+              {deleting && deleting.id === u.id && (
+                <div className="delete-box">
+                  <p><b>Delete {u.name}'s account permanently?</b> This erases their name, email, password, profile, photo, certificates and reviews,
+                    and removes them from every vessel. Maintenance history they signed stays on the yacht as "Deleted user". This cannot be undone.</p>
+                  <label>Type their email to confirm
+                    <input value={deleting.typed} onChange={(e) => setDeleting({ ...deleting, typed: e.target.value })} placeholder={u.email} autoComplete="off" />
+                  </label>
+                  <div className="actions left">
+                    <button className="btn danger-btn" disabled={busy || deleting.typed.trim().toLowerCase() !== u.email.toLowerCase()}
+                      onClick={async () => { const r = await run(() => call('deleteUser', { userId: u.id, confirmEmail: deleting.typed })); if (r) { setDeleting(null); setMsg(r.message); } }}>
+                      Delete account permanently
+                    </button>
+                    <button className="btn" onClick={() => setDeleting(null)}>Cancel</button>
+                  </div>
+                </div>
               )}
             </li>
           ))}
