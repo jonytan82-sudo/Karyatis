@@ -14,7 +14,7 @@
  *                body: JSON.stringify({ action, token, vesselId, ... }) })
  */
 
-const SCRIPT_VERSION = '2.8 (delete accounts)';
+const SCRIPT_VERSION = '2.9 (delete, download and upload vessels)';
 
 // ───────────────────────── CONFIG ─────────────────────────
 const CONFIG = {
@@ -45,7 +45,7 @@ const SHEETS = {
   Profiles:    ['userId', 'photo', 'headline', 'bio', 'location', 'yearsExperience', 'availability',
                 'phone', 'showContact', 'languages', 'certifications', 'experience', 'updatedAt',
                 'shareReviews', 'shareId', 'operatingArea'],
-  Vessels:     ['id', 'name', 'type', 'length', 'homePort', 'active', 'createdAt', 'createdBy'],
+  Vessels:     ['id', 'name', 'type', 'length', 'homePort', 'active', 'createdAt', 'createdBy', 'deletedAt'],
   VesselRequests: ['id', 'userId', 'name', 'type', 'length', 'homePort', 'role', 'message', 'status',
                    'createdAt', 'handledBy', 'handledAt', 'vesselId', 'note'],
   Memberships: ['id', 'vesselId', 'userId', 'position', 'status', 'joinedAt', 'leftAt', 'invitedBy', 'access', 'departments'],
@@ -63,7 +63,7 @@ const SHEETS = {
   Attachments: ['id', 'vesselId', 'taskId', 'noteId', 'fileId', 'name', 'mimeType', 'size', 'thumb', 'userId', 'createdAt'],
   StoredFiles: ['id', 'data'], // staging only: file contents kept in the sheet instead of Google Drive
   TaskReviews: ['id', 'vesselId', 'taskId', 'completionId', 'userId', 'requestedAt', 'message',
-                'status', 'reviewerId', 'score', 'text', 'reviewedAt'],
+                'status', 'reviewerId', 'score', 'text', 'reviewedAt', 'taskTitle'],
   Audit:       ['timestamp', 'userId', 'action', 'taskId', 'details', 'vesselId']
 };
 
@@ -375,6 +375,9 @@ function doPost(e) {
       updateVessel:   () => { requireAdmin(user); return withLock(() => updateVessel(user, req.id, req.vessel || {})); },
       setUserActive:  () => { requireAdmin(user); return withLock(() => setUserActive(user, req.userId, req.active)); },
       deleteUser:     () => { requireAdmin(user); return withLock(() => deleteUser(user, req.userId, req.confirmEmail)); },
+      deleteVessel:   () => { requireAdmin(user); return withLock(() => deleteVessel(user, req.id, req.confirmName)); },
+      exportVessel:   () => { requireAdmin(user); return exportVessel(user, req.id, req.withFiles !== false); },
+      importVessel:   () => { requireAdmin(user); return withLock(() => importVessel(user, req.package)); },
       sendBackupNow:  () => { requireAdmin(user); return sendBackupNow(user, req.backupVesselId); },
 
       // new yacht requests from owners and captains
@@ -1338,7 +1341,7 @@ function performanceOf(userId, withNames) {
   const items = readTable('TaskReviews').filter(r => r.userId === userId && r.status === 'reviewed')
     .sort((a, b) => a.reviewedAt < b.reviewedAt ? 1 : -1)
     .map(r => ({ date: (comps[r.completionId] || {}).performedDate || (r.reviewedAt || '').slice(0, 10),
-                 task: (tasks[r.taskId] || {}).title || '', system: (tasks[r.taskId] || {}).system || '',
+                 task: (tasks[r.taskId] || {}).title || r.taskTitle || '', system: (tasks[r.taskId] || {}).system || '',
                  vesselName: vessels[r.vesselId] || '', score: Number(r.score), text: r.text,
                  by: roleOf(r.reviewerId, r.vesselId) + (withNames && names[r.reviewerId] ? ' ' + names[r.reviewerId] : '') }));
   const avg = items.length ? items.reduce((s, x) => s + x.score, 0) / items.length : 0;
@@ -1474,7 +1477,7 @@ function adminOverview() {
   const ms = readTable('Memberships');
   const tasks = readTable('Tasks').filter(t => t.state === 'Open');
   const vName = {};
-  const vessels = readTable('Vessels').map(v => {
+  const vessels = readTable('Vessels').filter(v => !v.deletedAt).map(v => {
     vName[v.id] = v.name;
     const vt = tasks.filter(t => t.vesselId === v.id);
     const managers = ms.filter(m => m.vesselId === v.id && m.status === 'active' && permsOfMember(m).manageCrew)
@@ -1519,7 +1522,7 @@ function createVessel(user, v) {
 }
 
 function updateVessel(user, id, v) {
-  const vessel = readTable('Vessels').find(x => x.id === id);
+  const vessel = readTable('Vessels').find(x => x.id === id && !x.deletedAt);
   if (!vessel) throw new Error('Vessel not found');
   ['name', 'type', 'length', 'homePort'].forEach(k => { if (v[k] !== undefined) vessel[k] = clip(v[k], 100); });
   if (v.active !== undefined) vessel.active = v.active ? 'TRUE' : 'FALSE';
@@ -2561,4 +2564,218 @@ function deleteUser(admin, userId, confirmEmail) {
   audit(admin.id, 'deleteUser', '', 'Account ' + userId + ' deleted', '');
   return { ok: true, counts, orphaned,
            message: 'Account deleted.' + (orphaned.length ? ' ' + orphaned.join(', ') + ' now has no captain or owner on CJM Marine.' : '') };
+}
+
+// ═════════════════════════ DELETE VESSEL (CJM admin) ═════════════════════════
+/**
+ * Permanently removes a vessel's maintenance program: tasks, sign-offs, notes, attached files (moved to the
+ * Drive trash), materials and purchase lists, open work-review requests, invitations and its activity log.
+ * Crew keep what is theirs: time aboard (their membership ends today), star reviews and finished work reviews.
+ * A minimal record (name, type, length) stays so their sea time still names the yacht.
+ */
+function deleteVessel(admin, id, confirmName) {
+  const v = readTable('Vessels').find(x => x.id === id && !x.deletedAt);
+  if (!v) throw new Error('Vessel not found');
+  if (normVessel(confirmName) !== normVessel(v.name)) throw new Error('Type the vessel name exactly to confirm');
+  const taskIds = {}; readTable('Tasks').filter(t => t.vesselId === id).forEach(t => taskIds[t.id] = t.title);
+  const inV = (r) => taskIds[r.taskId] !== undefined;
+  // keep the task name on finished work reviews (they belong to the crew member)
+  readTable('TaskReviews').filter(r => r.vesselId === id && r.status === 'reviewed' && !r.taskTitle)
+    .forEach(r => { r.taskTitle = taskIds[r.taskId] || ''; update('TaskReviews', r._row, r); });
+  // trash attached files
+  let files = 0;
+  readTable('Attachments').filter(a => a.vesselId === id).forEach(a => {
+    if (String(a.fileId).indexOf('stg:') === 0) { deleteRowsWhere('StoredFiles', f => 'stg:' + f.id === a.fileId); files++; return; }
+    try { DriveApp.getFileById(a.fileId).setTrashed(true); files++; } catch (e) { Logger.log('Could not trash ' + a.fileId + ': ' + e.message); }
+  });
+  const counts = {
+    tasks: deleteRowsWhere('Tasks', t => t.vesselId === id),
+    signoffs: deleteRowsWhere('Completions', inV),
+    notes: deleteRowsWhere('Notes', inV),
+    files: deleteRowsWhere('Attachments', a => a.vesselId === id) && files,
+    reviewRequests: deleteRowsWhere('TaskReviews', r => r.vesselId === id && r.status !== 'reviewed'),
+    invitations: deleteRowsWhere('Memberships', m => m.vesselId === id && m.status === 'invited'),
+    activity: deleteRowsWhere('Audit', a => a.vesselId === id)
+  };
+  ['Materials', 'Onboard', 'PurchaseLists'].forEach(n => { if (SHEETS[n]) counts[n.toLowerCase()] = deleteRowsWhere(n, r => r.vesselId === id); });
+  // crew: their time aboard ends today
+  let crew = 0;
+  readTable('Memberships').filter(m => m.vesselId === id && m.status === 'active').forEach(m => {
+    m.status = 'left'; m.leftAt = nowIso(); update('Memberships', m._row, m); crew++;
+  });
+  counts.crew = crew;
+  const name = v.name;
+  v.active = 'FALSE'; v.deletedAt = nowIso(); v.homePort = '';
+  update('Vessels', v._row, v);
+  audit(admin.id, 'deleteVessel', '', name + ' deleted (' + counts.tasks + ' tasks, ' + crew + ' crew)', '');
+  return { ok: true, counts, message: name + ' deleted: ' + counts.tasks + ' tasks, ' + counts.signoffs + ' sign-offs, ' + counts.notes + ' notes and ' +
+           files + ' files removed. ' + crew + ' crew keep their time aboard and reviews.' };
+}
+
+// ═════════════════════════ DOWNLOAD / UPLOAD VESSEL DATA (CJM admin) ═════════════════════════
+// A vessel file (.json) holds the yacht, its tasks, sign-offs, notes, attached files, work reviews, crew list,
+// star reviews and activity log, plus the name and email of everyone mentioned (no passwords or profiles).
+// Uploading it restores a deleted yacht with its original records, or makes a copy if the yacht still exists.
+const VESSEL_FILE = 'cjm-marine-vessel';
+const EXPORT_FILE_LIMIT = 30 * 1024 * 1024; // attached files beyond this total are left out of the download
+const VESSEL_TABLES = ['Tasks', 'Completions', 'Notes', 'Attachments', 'TaskReviews', 'Memberships', 'Reviews', 'Audit', 'Materials', 'Onboard', 'PurchaseLists'];
+
+function stripRow(r) { const o = Object.assign({}, r); delete o._row; return o; }
+
+function exportVessel(admin, id, withFiles) {
+  const v = readTable('Vessels').find(x => x.id === id && !x.deletedAt);
+  if (!v) throw new Error('Vessel not found');
+  const tasks = readTable('Tasks').filter(t => t.vesselId === id);
+  const tid = {}; tasks.forEach(t => tid[t.id] = 1);
+  const pick = (n, f) => (SHEETS[n] ? readTable(n).filter(f).map(stripRow) : []);
+  const data = {
+    tasks: tasks.map(stripRow),
+    completions: pick('Completions', r => tid[r.taskId]),
+    notes: pick('Notes', r => tid[r.taskId]),
+    attachments: pick('Attachments', a => a.vesselId === id),
+    taskReviews: pick('TaskReviews', r => r.vesselId === id),
+    memberships: pick('Memberships', m => m.vesselId === id),
+    reviews: pick('Reviews', r => r.vesselId === id),
+    audit: pick('Audit', a => a.vesselId === id || tid[a.taskId]),
+    materials: pick('Materials', r => r.vesselId === id),
+    onboard: pick('Onboard', r => r.vesselId === id),
+    purchaseLists: pick('PurchaseLists', r => r.vesselId === id)
+  };
+  let total = 0, skipped = 0;
+  data.attachments.forEach(a => {
+    if (!withFiles) return;
+    try {
+      const d = readFile(a.fileId);
+      if (total + d.length > EXPORT_FILE_LIMIT) { skipped++; return; }
+      a.data = d; total += d.length;
+    } catch (e) { skipped++; }
+  });
+  const ids = {};
+  const want = (x) => { if (x) ids[x] = 1; };
+  data.tasks.forEach(t => { want(t.assignedTo); want(t.createdBy); want(t.lastPerformedBy); });
+  data.completions.forEach(r => want(r.performedBy));
+  data.notes.forEach(r => want(r.userId));
+  data.attachments.forEach(r => want(r.userId));
+  data.taskReviews.forEach(r => { want(r.userId); want(r.reviewerId); });
+  data.memberships.forEach(r => { want(r.userId); want(r.invitedBy); });
+  data.reviews.forEach(r => { want(r.userId); want(r.reviewerId); });
+  data.audit.forEach(r => want(r.userId));
+  data.materials.forEach(r => want(r.createdBy));
+  data.onboard.forEach(r => want(r.updatedBy));
+  data.purchaseLists.forEach(r => { want(r.createdBy); want(r.receivedBy); });
+  const people = readTable('Users').filter(u => ids[u.id]).map(u => ({ id: u.id, name: u.name, email: u.email, deleted: isDeletedUser(u) }));
+  audit(admin.id, 'exportVessel', '', v.name, v.id);
+  return { ok: true, filesSkipped: skipped,
+           package: Object.assign({ format: VESSEL_FILE, formatVersion: 1, exportedAt: nowIso(), scriptVersion: SCRIPT_VERSION,
+                                    vessel: stripRow(v), people }, data) };
+}
+
+function importVessel(admin, pkg) {
+  if (!pkg || pkg.format !== VESSEL_FILE || !pkg.vessel || !pkg.vessel.id) throw new Error('This is not a CJM Marine vessel file');
+  if (Number(pkg.formatVersion) > 1) throw new Error('This file was made by a newer version. Update the Google Script first.');
+  const list = (k) => (Array.isArray(pkg[k]) ? pkg[k] : []);
+  // vessel: restore the deleted record, make a copy if it still exists, or add it fresh
+  const vessels = readTable('Vessels');
+  const old = vessels.find(x => x.id === pkg.vessel.id);
+  let vid = pkg.vessel.id, mode;
+  let name = clip(pkg.vessel.name, 100) || 'Restored vessel';
+  const nameTaken = (n) => vessels.some(x => isTrue(x.active) && !x.deletedAt && normVessel(x.name) === normVessel(n) && x.id !== vid);
+  if (old && !old.deletedAt) { mode = 'copy'; vid = newId('V'); name = name + ' (copy)'; }
+  else mode = old ? 'restore' : 'new';
+  if (nameTaken(name)) name = name + ' (restored ' + today() + ')';
+  const vrow = { id: vid, name, type: clip(pkg.vessel.type, 60), length: clip(pkg.vessel.length, 20), homePort: clip(pkg.vessel.homePort, 80),
+                 active: 'TRUE', createdAt: pkg.vessel.createdAt || nowIso(), createdBy: pkg.vessel.createdBy || admin.id, deletedAt: '' };
+  if (mode === 'restore') update('Vessels', old._row, Object.assign(old, vrow)); else insert('Vessels', vrow);
+
+  // people: same account (by id and email), else same email, else a new account without a password
+  const users = readTable('Users');
+  const umap = {}; let linked = 0, created = 0, tomb = '';
+  list('people').forEach(p => {
+    const email = String(p.email || '').toLowerCase().trim();
+    if (p.deleted || /@deleted\.invalid$/.test(email) || !email) {
+      if (!tomb) {
+        const same = users.find(u => u.id === p.id && isDeletedUser(u));
+        tomb = same ? same.id : newId('U');
+        if (!same) insert('Users', { id: tomb, name: DELETED_NAME, email: 'deleted-' + tomb.toLowerCase() + '@deleted.invalid', passwordHash: '', salt: '', active: 'FALSE', isAdmin: 'FALSE', createdAt: nowIso() });
+      }
+      umap[p.id] = tomb; return;
+    }
+    const byId = users.find(u => u.id === p.id && u.email === email);
+    const byEmail = byId || users.find(u => u.email === email && !isDeletedUser(u));
+    if (byEmail) { umap[p.id] = byEmail.id; linked++; return; }
+    const nid = users.some(u => u.id === p.id) ? newId('U') : p.id;
+    const nu = { id: nid, name: clip(p.name, 100) || email, email, passwordHash: '', salt: Utilities.getUuid(), active: 'TRUE', isAdmin: 'FALSE', createdAt: nowIso() };
+    insert('Users', nu); users.push(nu); umap[p.id] = nid; created++;
+  });
+  const U = (x) => (x ? umap[x] || '' : '');
+
+  // keep original ids when free, so restored records match what crew kept (reviews, sea time)
+  const existing = {};
+  const idsOf = (n) => { if (!existing[n]) { existing[n] = {}; if (SHEETS[n]) readTable(n).forEach(r => existing[n][r.id] = r); } return existing[n]; };
+  const fresh = (n, oldId, prefix) => (mode === 'copy' || idsOf(n)[oldId] ? newId(prefix) : oldId);
+  const tmap = {}, cmap = {}, nmap = {}, counts = { tasks: 0, signoffs: 0, notes: 0, files: 0, filesMissing: 0, crew: 0, reviews: 0, workReviews: 0 };
+
+  list('tasks').forEach(t => {
+    const id = fresh('Tasks', t.id, 'T'); tmap[t.id] = id;
+    insert('Tasks', Object.assign({}, t, { id, vesselId: vid, assignedTo: U(t.assignedTo), createdBy: U(t.createdBy), lastPerformedBy: U(t.lastPerformedBy), reminderLog: '' }));
+    counts.tasks++;
+  });
+  list('completions').forEach(c => {
+    if (!tmap[c.taskId]) return;
+    const id = fresh('Completions', c.id, 'X'); cmap[c.id] = id;
+    insert('Completions', Object.assign({}, c, { id, taskId: tmap[c.taskId], performedBy: U(c.performedBy) })); counts.signoffs++;
+  });
+  list('notes').forEach(n => {
+    if (!tmap[n.taskId]) return;
+    const id = fresh('Notes', n.id, 'N'); nmap[n.id] = id;
+    insert('Notes', Object.assign({}, n, { id, taskId: tmap[n.taskId], userId: U(n.userId) })); counts.notes++;
+  });
+  const vessel = { id: vid, name };
+  list('attachments').forEach(a => {
+    if (!tmap[a.taskId] || !nmap[a.noteId]) return;
+    if (!a.data) { counts.filesMissing++; return; }
+    checkAttachment({ name: a.name, mimeType: a.mimeType, data: a.data, thumb: a.thumb });
+    const fileId = storeFile(vessel, a.name, a.mimeType, a.data, Utilities.base64Decode(a.data));
+    insert('Attachments', { id: fresh('Attachments', a.id, 'A'), vesselId: vid, taskId: tmap[a.taskId], noteId: nmap[a.noteId], fileId, name: a.name,
+                            mimeType: a.mimeType, size: a.size, thumb: a.thumb || '', userId: U(a.userId), createdAt: a.createdAt });
+    counts.files++;
+  });
+  // work reviews and star reviews belong to crew: relink kept ones, add missing ones
+  list('taskReviews').forEach(r => {
+    const keep = mode !== 'copy' && idsOf('TaskReviews')[r.id];
+    const row = Object.assign({}, r, { vesselId: vid, taskId: tmap[r.taskId] || r.taskId, completionId: cmap[r.completionId] || r.completionId,
+                                       userId: U(r.userId), reviewerId: U(r.reviewerId) });
+    if (keep) update('TaskReviews', keep._row, Object.assign(keep, row)); else insert('TaskReviews', Object.assign(row, { id: fresh('TaskReviews', r.id, 'R') }));
+    counts.workReviews++;
+  });
+  list('reviews').forEach(r => {
+    if (mode === 'copy') return; // stars stay with the original yacht
+    if (idsOf('Reviews')[r.id]) return; // still on the crew member's record
+    insert('Reviews', Object.assign({}, r, { vesselId: vid, userId: U(r.userId), reviewerId: U(r.reviewerId) })); counts.reviews++;
+  });
+  // crew list: restore each person's status (time aboard continues from when it was saved)
+  list('memberships').forEach(m => {
+    const uid = U(m.userId);
+    if (!uid) return;
+    const keep = mode !== 'copy' && idsOf('Memberships')[m.id];
+    const row = Object.assign({}, m, { vesselId: vid, userId: uid, invitedBy: U(m.invitedBy) || admin.id });
+    if (keep) update('Memberships', keep._row, Object.assign(keep, row));
+    else if (!readTable('Memberships').some(x => x.vesselId === vid && x.userId === uid && (x.status === 'active' || x.status === 'invited'))) {
+      insert('Memberships', Object.assign(row, { id: fresh('Memberships', m.id, 'M') }));
+    }
+    if (m.status === 'active') counts.crew++;
+  });
+  list('audit').forEach(a => insert('Audit', Object.assign({}, a, { userId: U(a.userId), taskId: a.taskId ? tmap[a.taskId] || '' : '', vesselId: vid })));
+  ['materials', 'onboard', 'purchaseLists'].forEach(k => {
+    const n = k.charAt(0).toUpperCase() + k.slice(1);
+    if (!SHEETS[n]) return;
+    list(k).forEach(r => insert(n, Object.assign({}, r, { id: fresh(n, r.id, 'MT'), vesselId: vid, taskId: r.taskId ? tmap[r.taskId] || '' : undefined,
+      createdBy: U(r.createdBy), updatedBy: U(r.updatedBy), receivedBy: U(r.receivedBy) })));
+  });
+  audit(admin.id, 'importVessel', '', name + ' (' + mode + ')', vid);
+  const what = { restore: 'restored', new: 'added', copy: 'added as a copy' }[mode];
+  return { ok: true, mode, vessel: { id: vid, name }, counts, people: { linked, created },
+           message: name + ' ' + what + ': ' + counts.tasks + ' tasks, ' + counts.signoffs + ' sign-offs, ' + counts.notes + ' notes, ' + counts.files + ' files, ' +
+                    counts.crew + ' crew aboard.' + (created ? ' ' + created + ' new account(s) were created without passwords: use New setup link in the Crew tab.' : '') +
+                    (counts.filesMissing ? ' ' + counts.filesMissing + ' file(s) were not in the download.' : '') };
 }

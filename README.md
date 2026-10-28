@@ -68,6 +68,18 @@ React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
 5. Web addresses typed or pasted in notes, descriptions, resolutions and the activity log are clickable.
 6. CJM admin tab should show `Google Script version: 2.5 (photos and files on notes)`.
 
+## Upgrade to 2.9 (delete, download and upload vessels)
+1. Paste the new `apps-script/Code.gs`, save, then Deploy → Manage deployments → pencil → **New version** → Deploy.
+2. Upload this folder to GitHub.
+3. CJM admin → Vessels, on each vessel:
+   - **Download data** saves one `.json` file with the vessel, tasks, sign-offs, notes, attached files (up to 30 MB in total), work reviews, crew list,
+     star reviews and activity log, plus the name and email of everyone mentioned. No passwords or profiles.
+   - **Delete** (type the vessel name to confirm; download first is offered) removes the maintenance program and its files (to the Drive trash).
+     Crew keep their time aboard (it ends that day), star reviews and finished work reviews.
+4. **Upload vessel data** takes a downloaded file: a deleted vessel comes back with its original records and crew (people are matched by email),
+   a vessel that still exists is added as a "(copy)", and a file from another spreadsheet adds the vessel with accounts created (no passwords: send setup links).
+5. CJM admin tab should show `Google Script version: 2.9 (delete, download and upload vessels)`.
+
 ## Upgrade to 2.8 (delete accounts)
 1. Paste the new `apps-script/Code.gs`, save, then Deploy → Manage deployments → pencil → **New version** → Deploy.
 2. Upload this folder to GitHub.

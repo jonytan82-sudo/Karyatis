@@ -4,6 +4,7 @@ import SetupLink from './SetupLink.jsx';
 import Requests from './Requests.jsx';
 import AdminCard from './AdminCard.jsx';
 import { YachtRequestsAdmin } from './YachtRequests.jsx';
+import { DeleteVessel, UploadVessel, downloadVessel } from './VesselData.jsx';
 
 const BLANK = { name: '', type: 'Motor yacht', length: '', homePort: '', managerEmail: '', managerName: '', managerPosition: 'Captain / Master' };
 
@@ -18,6 +19,8 @@ export default function Admin({ user, catalog, onOpenVessel, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [server, setServer] = useState('');
   const [deleting, setDeleting] = useState(null); // { id, name, email, typed }
+  const [deletingVessel, setDeletingVessel] = useState(null);
+  const [uploading, setUploading] = useState(false);
 
   const load = () => call('adminOverview').then((r) => { setData(r); setError(''); }).catch((e) => setError(e.message));
   useEffect(() => {
@@ -94,6 +97,10 @@ export default function Admin({ user, catalog, onOpenVessel, onChanged }) {
             <div className="actions left"><button className="btn primary" disabled={busy}>Create vessel</button></div>
           </form>
         )}
+        <div className="actions left">
+          <button className="btn" onClick={() => setUploading(!uploading)}>{uploading ? 'Close upload' : 'Upload vessel data'}</button>
+        </div>
+        {uploading && <UploadVessel onDone={(m) => { setUploading(false); setMsg(m); load(); onChanged(); }} />}
         <ul className="fleet">
           {data.vessels.map((v) => (
             <li key={v.id} className={v.active ? '' : 'inactive'}>
@@ -114,7 +121,13 @@ export default function Admin({ user, catalog, onOpenVessel, onChanged }) {
                   if (v.active && !window.confirm(`Archive ${v.name}? Its crew lose access until you restore it. Nothing is deleted.`)) return;
                   run(() => call('updateVessel', { id: v.id, vessel: { active: !v.active } }), `${v.name} ${v.active ? 'archived' : 'restored'}.`);
                 }}>{v.active ? 'Archive' : 'Restore'}</button>
+                <button className="link" disabled={busy} onClick={() => run(() => downloadVessel(v)).then((m) => m && setMsg(m))}>Download data</button>
+                <button className="link danger" onClick={() => setDeletingVessel(v.id)}>Delete</button>
               </div>
+              {deletingVessel === v.id && (
+                <DeleteVessel vessel={v} onCancel={() => setDeletingVessel(null)}
+                  onDone={(m) => { setDeletingVessel(null); setMsg(m); load(); onChanged(); }} />
+              )}
             </li>
           ))}
         </ul>
