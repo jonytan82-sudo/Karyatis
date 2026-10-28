@@ -139,7 +139,7 @@ export default function App() {
   if (vessel) tabs.push(['board', perms.contractor ? 'My jobs' : 'Board'], ['calendar', 'Calendar'], ['tasks', 'All tasks']);
   if (vessel && !perms.contractor) tabs.push(['crew', 'Crew']);
   if (vessel && s.canReviewWork) tabs.push(['reviews', 'Reviews']);
-  if (vesselOptions.length > 1 || (!vessel && vesselOptions.length)) tabs.push(['vessels', 'Vessels']);
+  if (vesselOptions.length > 1 || (!vessel && vesselOptions.length) || s.canRequestVessel) tabs.push(['vessels', 'Vessels']);
   tabs.push(['profile', 'My profile']);
   if (user.canSearch) tabs.push(['directory', 'Find crew']);
   if (user.isAdmin) tabs.push(['admin', 'CJM admin']);
@@ -178,7 +178,7 @@ export default function App() {
       {tab === 'crew' && vessel && !perms.contractor && (
         <Crew user={user} vessel={vessel} perms={perms} crew={crew} catalog={s.catalog} onChanged={refresh} />
       )}
-      {tab === 'vessels' && <Vessels options={vesselOptions} current={vessel} busy={busy} onOpen={openVessel} />}
+      {tab === 'vessels' && <Vessels options={vesselOptions} current={vessel} busy={busy} onOpen={openVessel} canRequest={s.canRequestVessel} onChanged={refresh} />}
       {tab === 'profile' && <Profile user={user} vessel={vessel} onChanged={refresh} />}
       {tab === 'directory' && user.canSearch && <Directory catalog={s.catalog} />}
       {tab === 'admin' && user.isAdmin && <Admin user={user} catalog={s.catalog} onOpenVessel={openVessel} onChanged={refresh} />}

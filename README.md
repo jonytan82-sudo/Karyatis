@@ -68,6 +68,14 @@ React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
 5. Web addresses typed or pasted in notes, descriptions, resolutions and the activity log are clickable.
 6. CJM admin tab should show `Google Script version: 2.5 (photos and files on notes)`.
 
+## Upgrade to 2.7 (yacht requests)
+1. Paste the new `apps-script/Code.gs`, save, then Deploy → Manage deployments → pencil → **New version** → Deploy. The VesselRequests tab is created automatically.
+2. Upload this folder to GitHub.
+3. Captains and owners (Command or Owner oversight on any vessel, or accounts approved as Owner/Captain with no vessel yet) see **Vessels → Request a new yacht**.
+   CJM admins are emailed and approve or decline in **CJM admin → Yacht requests** (the name, length and home port can be corrected first).
+   On approval the yacht is created with the requester aboard as Captain, Owner or Yacht Manager, and they are emailed.
+4. CJM admin tab should show `Google Script version: 2.7 (yacht requests)`.
+
 ## Upgrade to 2.6 (login codes, 15-character passwords)
 1. Paste the new `apps-script/Code.gs` into Apps Script, save, then Deploy → Manage deployments → pencil → **New version** → Deploy.
 2. Upload this folder to GitHub.

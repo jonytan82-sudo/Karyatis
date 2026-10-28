@@ -14,7 +14,7 @@
  *                body: JSON.stringify({ action, token, vesselId, ... }) })
  */
 
-const SCRIPT_VERSION = '2.6 (login codes, 15-character passwords)';
+const SCRIPT_VERSION = '2.7 (yacht requests)';
 
 // ───────────────────────── CONFIG ─────────────────────────
 const CONFIG = {
@@ -46,6 +46,8 @@ const SHEETS = {
                 'phone', 'showContact', 'languages', 'certifications', 'experience', 'updatedAt',
                 'shareReviews', 'shareId', 'operatingArea'],
   Vessels:     ['id', 'name', 'type', 'length', 'homePort', 'active', 'createdAt', 'createdBy'],
+  VesselRequests: ['id', 'userId', 'name', 'type', 'length', 'homePort', 'role', 'message', 'status',
+                   'createdAt', 'handledBy', 'handledAt', 'vesselId', 'note'],
   Memberships: ['id', 'vesselId', 'userId', 'position', 'status', 'joinedAt', 'leftAt', 'invitedBy', 'access', 'departments'],
   Sessions:    ['token', 'userId', 'expiresAt'],
   Tokens:      ['token', 'userId', 'purpose', 'expiresAt', 'used'],
@@ -372,7 +374,14 @@ function doPost(e) {
       createVessel:   () => { requireAdmin(user); return withLock(() => createVessel(user, req.vessel || {})); },
       updateVessel:   () => { requireAdmin(user); return withLock(() => updateVessel(user, req.id, req.vessel || {})); },
       setUserActive:  () => { requireAdmin(user); return withLock(() => setUserActive(user, req.userId, req.active)); },
-      sendBackupNow:  () => { requireAdmin(user); return sendBackupNow(user, req.backupVesselId); }
+      sendBackupNow:  () => { requireAdmin(user); return sendBackupNow(user, req.backupVesselId); },
+
+      // new yacht requests from owners and captains
+      requestVessel:        () => withLock(() => requestVessel(user, req.vessel || {})),
+      listVesselRequests:   () => listVesselRequests(user),
+      cancelVesselRequest:  () => withLock(() => cancelVesselRequest(user, req.id)),
+      approveVesselRequest: () => { requireAdmin(user); return withLock(() => approveVesselRequest(user, req.id, req.vessel || {})); },
+      declineVesselRequest: () => { requireAdmin(user); return withLock(() => declineVesselRequest(user, req.id, req.note)); }
     };
     const fn = handlers[req.action];
     if (!fn) return json({ ok: false, error: 'Unknown action "' + req.action + '". The Google Script is out of date: in Apps Script, Deploy → Manage deployments → Edit → New version.' });
@@ -631,6 +640,7 @@ function bootstrap(user, vesselId) {
     invites,
     vessels: isTrue(user.isAdmin) ? vessels.map(v => ({ vesselId: v.id, vesselName: v.name })) : undefined,
     pendingRequests: countPendingRequests(user),
+    canRequestVessel: canRequestVessel(user),
     catalog: roleCatalog()
   };
 
@@ -923,7 +933,8 @@ function requestsVisibleTo(user, vesselId) {
 }
 
 function countPendingRequests(user) {
-  return requestsVisibleTo(user, '').length;
+  const yachts = isTrue(user.isAdmin) ? readTable('VesselRequests').filter(r => r.status === 'pending').length : 0;
+  return requestsVisibleTo(user, '').length + yachts;
 }
 
 function listRequests(user, vesselId) {
@@ -2076,7 +2087,7 @@ const TABLE_CACHE = {}; // lives for one request only
 
 const HEADERS_CHECKED = {};
 
-const AUTO_TABS = ['TaskReviews', 'Attachments', 'StoredFiles'];
+const AUTO_TABS = ['TaskReviews', 'Attachments', 'StoredFiles', 'VesselRequests'];
 
 function sheet(name) {
   let sh = SpreadsheetApp.getActive().getSheetByName(name);
@@ -2384,4 +2395,112 @@ function removeDemoVessel() {
     });
     return ['Demo vessel archived and demo accounts deactivated'];
   });
+}
+
+// ═════════════════════════ NEW YACHT REQUESTS ═════════════════════════
+// Owners and captains ask CJM to add a yacht. A CJM admin approves (the yacht is created with the
+// requester aboard as Captain or Owner) or declines. Both sides are emailed.
+const VESSEL_TYPES = ['Motor yacht', 'Sailing yacht', 'Catamaran', 'Expedition yacht', 'Sport fisher', 'Other'];
+const REQUEST_ROLES = { captain: 'Captain / Master', owner: 'Yacht Owner', manager: 'Yacht Manager (shore-based)' };
+
+/** Captains and owners (Command or Owner oversight on any vessel), or accounts approved as an Owner or Captain who have no vessel yet. */
+function canRequestVessel(user) {
+  if (isTrue(user.isAdmin)) return false; // admins add yachts directly in the CJM admin tab
+  const mine = readTable('Memberships').filter(m => m.userId === user.id && m.status === 'active');
+  if (mine.some(m => ['command', 'oversight'].indexOf(roleOf(m).access) !== -1)) return true;
+  if (mine.length) return false;
+  return readTable('Requests').some(r => r.email === user.email && r.status === 'approved' && (r.kind === 'Owner' || r.kind === 'Captain'));
+}
+
+function vesselRequestView(r, names) {
+  return { id: r.id, name: r.name, type: r.type, length: r.length, homePort: r.homePort, role: REQUEST_ROLES[r.role] || r.role,
+           roleKey: r.role, message: r.message, status: r.status, createdAt: r.createdAt, handledAt: r.handledAt, note: r.note,
+           vesselId: r.vesselId, by: names ? names[r.userId] || '' : undefined, userId: r.userId };
+}
+
+function requestVessel(user, v) {
+  if (!canRequestVessel(user)) throw new Error('Only owners and captains can request a new yacht. Ask CJM Marine to set you up.');
+  const name = clip(v.name, 100);
+  if (!name) throw new Error('Enter the yacht name');
+  if (!REQUEST_ROLES[v.role]) throw new Error('Choose your role on the yacht');
+  if (readTable('Vessels').some(x => isTrue(x.active) && normVessel(x.name) === normVessel(name))) {
+    throw new Error('A yacht named ' + name + ' is already on CJM Marine. Ask its captain to invite you, or contact CJM Marine.');
+  }
+  const mine = readTable('VesselRequests').filter(r => r.userId === user.id && r.status === 'pending');
+  if (mine.some(r => normVessel(r.name) === normVessel(name))) throw new Error('You already asked for ' + name + '. CJM Marine will reply by email.');
+  if (mine.length >= 5) throw new Error('You have 5 requests waiting. CJM Marine will review them first.');
+  const r = { id: newId('VR'), userId: user.id, name, type: VESSEL_TYPES.indexOf(v.type) !== -1 ? v.type : 'Other',
+              length: clip(v.length, 20), homePort: clip(v.homePort, 80), role: v.role, message: clip(v.message, 1000),
+              status: 'pending', createdAt: nowIso(), handledBy: '', handledAt: '', vesselId: '', note: '' };
+  insert('VesselRequests', r);
+  audit(user.id, 'requestVessel', '', name, '');
+  const admins = readTable('Users').filter(u => isTrue(u.isAdmin) && isTrue(u.active)).map(u => u.email);
+  if (admins.length) {
+    sendMail(admins.join(','), 'New yacht request: ' + name,
+      '<p><b>' + esc(user.name) + '</b> (' + esc(user.email) + ') asked to add a yacht as <b>' + esc(REQUEST_ROLES[r.role]) + '</b>:</p>' +
+      '<p><b>' + esc(name) + '</b><br>' + esc([r.type, r.length, r.homePort].filter(Boolean).join(', ')) + '</p>' +
+      (r.message ? '<p>“' + esc(r.message) + '”</p>' : '') +
+      '<p>Approve or decline it in the CJM admin tab.</p>' + appLink());
+  }
+  return { ok: true, request: vesselRequestView(r), message: 'Request sent. CJM Marine will email you when ' + name + ' is ready.' };
+}
+
+function listVesselRequests(user) {
+  const names = crewNames();
+  const all = readTable('VesselRequests').sort((a, b) => a.createdAt < b.createdAt ? 1 : -1);
+  if (isTrue(user.isAdmin)) {
+    const emails = {}; readTable('Users').forEach(u => emails[u.id] = u.email);
+    return { ok: true, requests: all.filter((r, i) => r.status === 'pending' || i < 30)
+      .map(r => Object.assign(vesselRequestView(r, names), { email: emails[r.userId] || '' })) };
+  }
+  return { ok: true, canRequest: canRequestVessel(user), requests: all.filter(r => r.userId === user.id).slice(0, 20).map(r => vesselRequestView(r)) };
+}
+
+function vesselRequestRow(id) {
+  const r = readTable('VesselRequests').find(x => x.id === id);
+  if (!r) throw new Error('Request not found');
+  return r;
+}
+
+function cancelVesselRequest(user, id) {
+  const r = vesselRequestRow(id);
+  if (r.userId !== user.id) throw new Error('Request not found');
+  if (r.status !== 'pending') throw new Error('This request was already ' + r.status);
+  r.status = 'cancelled'; r.handledBy = user.id; r.handledAt = nowIso();
+  update('VesselRequests', r._row, r);
+  return { ok: true };
+}
+
+function approveVesselRequest(admin, id, edits) {
+  const r = vesselRequestRow(id);
+  if (r.status !== 'pending') throw new Error('This request was already ' + r.status);
+  const requester = readTable('Users').find(u => u.id === r.userId && isTrue(u.active));
+  if (!requester) throw new Error('The person who asked is no longer active');
+  const made = createVessel(admin, { name: edits.name || r.name, type: edits.type || r.type,
+                                     length: edits.length !== undefined ? edits.length : r.length,
+                                     homePort: edits.homePort !== undefined ? edits.homePort : r.homePort });
+  const role = defaultRole(REQUEST_ROLES[r.role] || 'Captain / Master');
+  insert('Memberships', { id: newId('M'), vesselId: made.vessel.id, userId: requester.id, position: role.title, status: 'active',
+                          joinedAt: nowIso(), leftAt: '', invitedBy: admin.id, access: role.access, departments: role.depts.join(',') });
+  r.status = 'approved'; r.handledBy = admin.id; r.handledAt = nowIso(); r.vesselId = made.vessel.id;
+  update('VesselRequests', r._row, r);
+  audit(admin.id, 'approveVesselRequest', '', made.vessel.name + ' for ' + requester.name, made.vessel.id);
+  sendMail(requester.email, made.vessel.name + ' is ready on ' + CONFIG.APP_NAME,
+    '<p>Hello ' + esc(requester.name.split(' ')[0]) + ',</p>' +
+    '<p><b>' + esc(made.vessel.name) + '</b> is set up, and you are aboard as <b>' + esc(role.title) + '</b>. ' +
+    'Log in and pick it from your vessels to start its maintenance program and invite the crew.</p>' + appLink());
+  return { ok: true, vessel: made.vessel };
+}
+
+function declineVesselRequest(admin, id, note) {
+  const r = vesselRequestRow(id);
+  if (r.status !== 'pending') throw new Error('This request was already ' + r.status);
+  r.status = 'declined'; r.handledBy = admin.id; r.handledAt = nowIso(); r.note = clip(note, 500);
+  update('VesselRequests', r._row, r);
+  audit(admin.id, 'declineVesselRequest', '', r.name, '');
+  const requester = readTable('Users').find(u => u.id === r.userId);
+  if (requester) sendMail(requester.email, 'Your request for ' + r.name,
+    '<p>Hello ' + esc(requester.name.split(' ')[0]) + ',</p><p>CJM Marine could not add <b>' + esc(r.name) + '</b> right now.</p>' +
+    (r.note ? '<p>“' + esc(r.note) + '”</p>' : '') + '<p>Questions? Email support@cjm-aero.com.</p>');
+  return { ok: true };
 }

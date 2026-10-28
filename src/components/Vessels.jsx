@@ -1,4 +1,6 @@
-export default function Vessels({ options, current, busy, onOpen }) {
+import { RequestYacht } from './YachtRequests.jsx';
+
+export default function Vessels({ options, current, busy, onOpen, canRequest, onChanged }) {
   return (
     <div className="vessels">
       <h2>Your vessels</h2>
@@ -12,7 +14,8 @@ export default function Vessels({ options, current, busy, onOpen }) {
           </button>
         ))}
       </div>
-      {!options.length && <p className="empty">You are not on a vessel yet. A captain can invite you, and you can build your profile meanwhile.</p>}
+      {!options.length && <p className="empty">You are not on a vessel yet.{canRequest ? ' Ask CJM Marine to add your yacht below.' : ' A captain can invite you, and you can build your profile meanwhile.'}</p>}
+      {canRequest && <RequestYacht onChanged={onChanged} />}
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { call } from '../api.js';
 import SetupLink from './SetupLink.jsx';
 import Requests from './Requests.jsx';
 import AdminCard from './AdminCard.jsx';
+import { YachtRequestsAdmin } from './YachtRequests.jsx';
 
 const BLANK = { name: '', type: 'Motor yacht', length: '', homePort: '', managerEmail: '', managerName: '', managerPosition: 'Captain / Master' };
 
@@ -139,6 +140,8 @@ export default function Admin({ user, catalog, onOpenVessel, onChanged }) {
           </div>
         )}
       </section>
+
+      <YachtRequestsAdmin onChanged={() => { load(); onChanged(); }} />
 
       <Requests vessels={activeVessels.map((v) => ({ id: v.id, name: v.name }))} catalog={catalog} allowOversight allowCommand onChanged={() => { load(); onChanged(); }} />
 

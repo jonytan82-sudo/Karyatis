@@ -877,3 +877,23 @@ a.btn { text-decoration: none; display: inline-block; color: inherit; }
 .code-input { font-size: 1.6rem !important; letter-spacing: 0.4em; text-align: center; font-variant-numeric: tabular-nums; }
 .pw-rule { list-style: none; margin: -0.4rem 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.3rem 1rem; font-size: 0.85rem; color: var(--muted); }
 .pw-rule li.met { color: var(--green); font-weight: 600; }
+
+/* ── Yacht requests ── */
+.yacht-req { margin-top: 1.5rem; }
+.yr-list { list-style: none; padding: 0; margin: 0.6rem 0 0; display: grid; gap: 0.5rem; }
+.yr-list > li { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 0.7rem 0.9rem; display: grid; gap: 0.35rem; }
+.yr-list small { color: var(--muted); }
+.yr-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.8rem; }
+.yr-msg { margin: 0; font-style: italic; color: var(--ink-2); }
+.yr-note { color: var(--ink-2) !important; }
+.yr-admin .three { margin: 0.2rem 0; }
+.tag.yr-pending { background: #fff6dc; color: #7a5600; border-color: #ecd48d; }
+.tag.yr-approved { background: #e8f3ea; color: #1f5d2a; border-color: #b9dcc0; }
+.tag.yr-declined { background: #fde8e6; color: var(--red); border-color: #f1b8b2; }
+.yr-done { margin-top: 0.6rem; }
+.yr-done ul { margin: 0.4rem 0 0; padding-left: 1.1rem; }
+.three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; }
+@media (max-width: 560px) { .three { grid-template-columns: 1fr; } }
+.note-card p { margin: 0; }
+.yacht-req .form.card, .yr-admin .form { display: flex; flex-direction: column; gap: 0.8rem; }
+.yr-admin .form.three { display: grid; }
