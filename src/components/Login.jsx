@@ -3,6 +3,7 @@ import { call, setToken } from '../api.js';
 import { TitleSelect } from './Roles.jsx';
 import { SUPPORT, contactVcard, downloadVcard } from '../contact.js';
 import Logo from './Logo.jsx';
+import PasswordRule, { PASSWORD_MIN, passwordProblem } from './PasswordRule.jsx';
 import Hero from './Hero.jsx';
 
 function ContactUs() {
@@ -25,7 +26,7 @@ const startKind = AS[(params.get('as') || '').toLowerCase()] || 'Crew';
 const clearSetupParam = () => window.history.replaceState(null, '', window.location.pathname);
 
 export default function Login({ onLogin }) {
-  const [mode, setMode] = useState(setupToken() ? 'setup' : params.get('request') ? 'request' : 'login'); // login | forgot | code | request | setup
+  const [mode, setMode] = useState(setupToken() ? 'setup' : params.get('request') ? 'request' : 'login'); // login | verify | forgot | code | request | setup
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
@@ -37,6 +38,7 @@ export default function Login({ onLogin }) {
   const [slow, setSlow] = useState(false);
   const [done, setDone] = useState(false);
   const [catalog, setCatalog] = useState(null);
+  const [challenge, setChallenge] = useState(null); // { id, sentTo, minutes } while waiting for the emailed login code
 
   useEffect(() => {
     if (mode === 'request' && !catalog) call('catalog').then((r) => setCatalog(r.catalog)).catch(() => {});
@@ -70,22 +72,32 @@ export default function Login({ onLogin }) {
 
   const submit = (e) => {
     e.preventDefault();
-    if (mode === 'login') run(async () => finish(await call('login', { email, password, vesselId: '' })));
+    if (mode === 'login') run(async () => {
+      const r = await call('login', { email, password, vesselId: '' });
+      if (r.needCode) { setChallenge({ id: r.challenge, sentTo: r.sentTo, minutes: r.minutes }); setPassword(''); setCode(''); setInfo(''); setMode('verify'); }
+      else finish(r);
+    });
+    else if (mode === 'verify') run(async () => finish(await call('verifyLoginCode', { challenge: challenge.id, code })));
     else if (mode === 'forgot') run(async () => { const r = await call('requestReset', { email }); setInfo(r.message); setMode('code'); });
     else if (mode === 'code') run(async () => finish(await call('confirmReset', { email, code, newPassword: password })));
     else if (mode === 'setup') run(async () => finish(await call('completeSetup', { setupToken: setupToken(), newPassword: password })));
     else if (mode === 'request') run(async () => { const r = await call('requestAccount', { request: { ...req, email } }); setInfo(r.message); setDone(true); });
   };
 
+  const resend = () => run(async () => { await call('resendLoginCode', { challenge: challenge.id }); setCode(''); setInfo('A new code is on its way.'); });
+  const newPw = mode === 'code' || mode === 'setup';
+  const pwBad = newPw && !!passwordProblem(password);
+
   const titles = {
     login: 'Log in to your vessel',
+    verify: 'Check your email for your login code',
     forgot: 'Reset your password',
     code: 'Enter your reset code',
     request: 'Request an account',
     setup: setupName ? `Welcome, ${setupName.split(' ')[0]}. Set your password to finish.` : 'Set up your account',
   };
   const buttons = {
-    login: ['Log in', 'Logging in…'], forgot: ['Email me a reset code', 'Sending…'], code: ['Set new password', 'Saving…'],
+    login: ['Log in', 'Logging in…'], verify: ['Verify and log in', 'Checking…'], forgot: ['Email me a reset code', 'Sending…'], code: ['Set new password', 'Saving…'],
     request: ['Send request', 'Sending…'], setup: ['Set password and log in', 'Saving…'],
   };
   const setReqF = (k) => (e) => setReq({ ...req, [k]: e.target.value });
@@ -102,10 +114,19 @@ export default function Login({ onLogin }) {
             {mode === 'request' && (
               <label>Full name<input value={req.name} onChange={setReqF('name')} required autoComplete="name" /></label>
             )}
-            <label>Email
+            {mode === 'verify' && challenge && (
+              <>
+                <p className="verify-note">For your security, admins, captains and owners confirm every login. We emailed a 6-digit code to <b>{challenge.sentTo}</b>. It works for {challenge.minutes} minutes.</p>
+                <label>Login code
+                  <input className="code-input" inputMode="numeric" autoComplete="one-time-code" maxLength={6} pattern="[0-9]{6}" autoFocus
+                    value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))} required />
+                </label>
+              </>
+            )}
+            {mode !== 'verify' && <label>Email
               <input type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required
                 readOnly={mode === 'code' || mode === 'setup'} />
-            </label>
+            </label>}
             {mode === 'request' && (
               <>
                 <label>I am
@@ -133,13 +154,14 @@ export default function Login({ onLogin }) {
             )}
             {(mode === 'login' || mode === 'code' || mode === 'setup') && (
               <label>{mode === 'login' ? 'Password' : 'New password'}
-                <input type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={mode === 'login' ? undefined : 6}
+                <input type="password" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} minLength={mode === 'login' ? undefined : PASSWORD_MIN}
                   value={password} onChange={(e) => setPassword(e.target.value)} required />
               </label>
             )}
+            {newPw && <PasswordRule value={password} />}
             {info && <div className="ok">{info} Check your inbox and spam folder.</div>}
             {error && <div className="alert">{error}</div>}
-            <button className="btn primary full" disabled={busy || (mode === 'setup' && !setupName)}>{busy ? buttons[mode][1] : buttons[mode][0]}</button>
+            <button className="btn primary full" disabled={busy || (mode === 'setup' && !setupName) || pwBad || (mode === 'verify' && code.length !== 6)}>{busy ? buttons[mode][1] : buttons[mode][0]}</button>
             {slow && <p className="hint">Still connecting. The first request after a quiet spell can take up to 15 seconds.</p>}
           </form>
         )}
@@ -153,6 +175,7 @@ export default function Login({ onLogin }) {
             <button className="link" onClick={() => go('login')}>Back to log in</button>
           )}
           {mode === 'code' && <button className="link" onClick={() => go('forgot')}>Send a new code</button>}
+          {mode === 'verify' && <button className="link" disabled={busy} onClick={resend}>Email me a new code</button>}
         </div>
         {mode === 'request' && !done && (
           <p className="hint">Your captain or CJM reviews requests. If you already have an account from another vessel, log in instead and ask the captain to invite you.</p>

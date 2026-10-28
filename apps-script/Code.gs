@@ -1,4 +1,4 @@
-/**  
+/**
  * CJM MARINE — Multi-vessel maintenance platform and crew directory
  * Google Apps Script backend, bound to one Google Sheet.
  *
@@ -14,7 +14,7 @@
  *                body: JSON.stringify({ action, token, vesselId, ... }) })
  */
 
-const SCRIPT_VERSION = '2.5 (photos and files on notes)';
+const SCRIPT_VERSION = '2.6 (login codes, 15-character passwords)';
 
 // ───────────────────────── CONFIG ─────────────────────────
 const CONFIG = {
@@ -24,7 +24,9 @@ const CONFIG = {
   REMINDER_DAYS: [30, 10, 0],  // email milestones before the due date
   OVERDUE_REMIND_EVERY: 3,     // days between repeat emails for overdue items
   RECUR_FROM: 'performed',     // 'performed' = next due counts from date done; 'due' = from old due date
-  SESSION_DAYS: 30,            // people stay logged in this long
+  SESSION_DAYS: 30,
+  PASSWORD_MIN: 15,            // new passwords: at least this long, with letters and numbers
+  LOGIN_CODE_MINUTES: 10,      // admins, captains and owners get an emailed code at every login; it works this long            // people stay logged in this long
   SETUP_LINK_DAYS: 7,          // how long an account setup link works
   DIGEST_HOUR: 7,              // hour (script time zone) the daily reminder runs
   BACKUP_HOUR: 5,              // hour the daily Google Sheets backup is emailed
@@ -310,6 +312,8 @@ function doPost(e) {
     const pub = {
       version:        () => ({ ok: true, version: SCRIPT_VERSION }),
       login:          () => withLock(() => login(req.email, req.password, req.vesselId)),
+      verifyLoginCode: () => withLock(() => verifyLoginCode(req.challenge, req.code)),
+      resendLoginCode: () => resendLoginCode(req.challenge),
       requestReset:   () => requestReset(req.email),
       confirmReset:   () => withLock(() => confirmReset(req.email, req.code, req.newPassword)),
       requestAccount: () => withLock(() => requestAccount(req.request || {})),
@@ -385,8 +389,85 @@ function login(email, password, vesselId) {
   if (!user || !user.passwordHash || hash(password || '', user.salt) !== user.passwordHash) {
     return { ok: false, error: 'Invalid email or password' };
   }
+  if (needsLoginCode(user)) return sendLoginCode(user, vesselId, Utilities.getUuid().replace(/-/g, ''));
+  return finishLogin(user, vesselId);
+}
+
+function finishLogin(user, vesselId) {
   const token = startSession(user);
   return Object.assign({ token }, bootstrap(user, vesselId));
+}
+
+// ───────────────────────── LOGIN CODE (two-step login) ─────────────────────────
+/** CJM admins, captains (Command) and owners (Owner oversight) confirm every login with an emailed code. */
+function needsLoginCode(user) {
+  if (isDemoEmail(user.email)) return false; // demo/test accounts cannot receive email
+  if (isTrue(user.isAdmin)) return true;
+  return readTable('Memberships').some(m => m.userId === user.id && m.status === 'active' &&
+                                             ['command', 'oversight'].indexOf(roleOf(m).access) !== -1);
+}
+
+function maskEmail(e) {
+  const [n, d] = String(e).split('@');
+  return (n.length <= 2 ? n.charAt(0) : n.slice(0, 2)) + '•••@' + d;
+}
+
+function sendLoginCode(user, vesselId, challenge) {
+  const cache = CacheService.getScriptCache();
+  const sent = Number(cache.get('lcn_' + user.id) || 0);
+  if (sent >= 5) return { ok: false, error: 'Too many login codes requested. Wait 15 minutes and try again.' };
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  const ttl = CONFIG.LOGIN_CODE_MINUTES * 60;
+  const mailed = sendMail(user.email, CONFIG.APP_NAME + ' login code: ' + code,
+    '<p>Your ' + esc(CONFIG.APP_NAME) + ' login code is:</p>' +
+    '<p style="font-size:28px;font-weight:bold;letter-spacing:4px">' + code + '</p>' +
+    '<p style="color:#666">It works for ' + CONFIG.LOGIN_CODE_MINUTES + ' minutes. If you did not just try to log in, ' +
+    'someone may have your password: change it in My profile → Password.</p>');
+  if (!mailed) return { ok: false, error: 'We could not email your login code. Try again in a minute.' };
+  cache.put('lcn_' + user.id, String(sent + 1), 900);
+  cache.put('lc_' + challenge, JSON.stringify({ userId: user.id, hash: hash(code, user.salt), attempts: 0, vesselId: vesselId || '',
+                                               sentAt: Date.now() }), ttl);
+  return { ok: true, needCode: true, challenge, sentTo: maskEmail(user.email), minutes: CONFIG.LOGIN_CODE_MINUTES };
+}
+
+function verifyLoginCode(challenge, code) {
+  const cache = CacheService.getScriptCache();
+  const key = 'lc_' + String(challenge || '');
+  const raw = cache.get(key);
+  if (!raw) throw new Error('This login code has expired. Log in again to get a new one.');
+  const rec = JSON.parse(raw);
+  const user = readTable('Users').find(u => u.id === rec.userId && isTrue(u.active));
+  if (!user) throw new Error('Account inactive');
+  if (hash(String(code || '').replace(/\D/g, ''), user.salt) !== rec.hash) {
+    rec.attempts++;
+    audit(user.id, 'loginCodeFailed', '', 'Attempt ' + rec.attempts, '');
+    if (rec.attempts >= 5) { cache.remove(key); throw new Error('Too many wrong codes. Log in again to get a new one.'); }
+    cache.put(key, JSON.stringify(rec), CONFIG.LOGIN_CODE_MINUTES * 60);
+    throw new Error('That code is not right. ' + (5 - rec.attempts) + ' tries left.');
+  }
+  cache.remove(key);
+  audit(user.id, 'login', '', 'Login confirmed with emailed code', '');
+  return finishLogin(user, rec.vesselId);
+}
+
+function resendLoginCode(challenge) {
+  const cache = CacheService.getScriptCache();
+  const raw = cache.get('lc_' + String(challenge || ''));
+  if (!raw) throw new Error('This login has expired. Log in again.');
+  const rec = JSON.parse(raw);
+  if (Date.now() - rec.sentAt < 30000) throw new Error('Wait 30 seconds before asking for a new code.');
+  const user = readTable('Users').find(u => u.id === rec.userId && isTrue(u.active));
+  if (!user) throw new Error('Account inactive');
+  return sendLoginCode(user, rec.vesselId, challenge);
+}
+
+/** New passwords: at least PASSWORD_MIN characters with letters and numbers. Existing passwords keep working. */
+function checkPassword(pw) {
+  pw = String(pw || '');
+  if (pw.length < CONFIG.PASSWORD_MIN || !/[A-Za-z]/.test(pw) || !/[0-9]/.test(pw)) {
+    throw new Error('Password must be at least ' + CONFIG.PASSWORD_MIN + ' characters and include both letters and numbers.');
+  }
+  if (pw.length > 200) throw new Error('Password is too long');
 }
 
 function startSession(user) {
@@ -441,7 +522,7 @@ function changePassword(user, oldPassword, newPassword) {
 }
 
 function setPassword(user, newPassword) {
-  if (!newPassword || String(newPassword).length < 6) throw new Error('Password must be at least 6 characters');
+  checkPassword(newPassword);
   user.salt = Utilities.getUuid();
   user.passwordHash = hash(newPassword, user.salt);
   update('Users', user._row, user);
@@ -495,7 +576,7 @@ function confirmReset(email, code, newPassword) {
   setPassword(user, newPassword);
   cache.remove('rc_' + email);
   audit(user.id, 'resetPasswordByEmail', '', '', '');
-  return login(email, newPassword);
+  return finishLogin(user, ''); // the emailed reset code already proved the email address
 }
 
 // ───────────────────────── ACCOUNT SETUP LINKS ─────────────────────────
@@ -525,7 +606,7 @@ function completeSetup(token, newPassword) {
   t.used = 'TRUE';
   update('Tokens', t._row, t);
   audit(user.id, 'accountSetup', '', '', '');
-  return login(user.email, newPassword);
+  return finishLogin(user, ''); // the emailed setup link already proved the email address
 }
 
 // ───────────────────────── BOOTSTRAP ─────────────────────────
@@ -1040,7 +1121,8 @@ function searchCrew(viewer, req) {
   const work = {};
   readTable('TaskReviews').forEach(r => { if (r.status === 'reviewed') (work[r.userId] = work[r.userId] || []).push(Number(r.score)); });
 
-  const results = readTable('Users').filter(u => isTrue(u.active) && u.id !== viewer.id).map(u => {
+  const showDemo = isTrue(viewer.isAdmin) || isDemoEmail(viewer.email); // demo crew never show up for real customers
+  const results = readTable('Users').filter(u => isTrue(u.active) && u.id !== viewer.id && (showDemo || !isDemoEmail(u.email))).map(u => {
     const p = profiles[u.id] || {};
     const ms = current[u.id] || [];
     const positions = ms.map(m => m.position).filter((x, i, a) => a.indexOf(x) === i);
@@ -1349,7 +1431,7 @@ function sendCrewRecord(user) {
 }
 
 function hasCrewRecord(u, profiles, memberIds) {
-  return isTrue(u.active) && u.passwordHash && (profiles[u.id] || memberIds[u.id]);
+  return isTrue(u.active) && u.passwordHash && !isDemoEmail(u.email) && (profiles[u.id] || memberIds[u.id]);
 }
 
 /** Daily trigger. Sends each crew member their record when it is CREW_RECORD_EVERY_DAYS old. */
@@ -1818,7 +1900,7 @@ function runBackups(onlyVesselId) {
     const to = members.filter(m => m.vesselId === v.id && CONFIG.BACKUP_TO.indexOf(roleOf(m).access) !== -1 &&
                                    users[m.userId] && isTrue(users[m.userId].active))
       .map(m => users[m.userId].email).filter(e => admins.indexOf(e) === -1);
-    shareFolder(file.folder, to);
+    shareFolder(file.folder, to.filter(e => !isDemoEmail(e)));
     if (to.length) {
       sendMail(to.join(','), v.name + ' maintenance backup ' + stamp,
         backupSummaryHtml(v, file) + '<p><a href="' + file.url + '">Open in Google Sheets</a></p>' +
@@ -1973,7 +2055,12 @@ function appLink() {
   return siteUrl() ? '<p><a href="' + siteUrl() + '">Open ' + esc(CONFIG.APP_NAME) + '</a></p>' : '';
 }
 
+/** Demo and test accounts use reserved domains (.test, .invalid, example.com) and never receive email. */
+function isDemoEmail(e) { return /@([^@\s,]+\.)?(test|invalid|example\.(com|org|net))$/i.test(String(e || '').trim()); }
+
 function sendMail(to, subject, html, attachments) {
+  to = String(to || '').split(',').map(x => x.trim()).filter(x => x && !isDemoEmail(x)).join(',');
+  if (!to) return true; // only demo/test recipients: nothing is sent
   try {
     MailApp.sendEmail({ to, subject, name: CONFIG.APP_NAME, attachments: attachments || [],
       htmlBody: '<div style="font-family:Arial,sans-serif;color:#12324a">' + html + '</div>' });
@@ -2082,4 +2169,219 @@ function esc(s) { return String(s).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<'
 
 function json(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * Run this once from the Apps Script editor (choose "authorizeDrive" next to Run, then press Run)
+ * to show Google's permission window for Google Drive. Photos and files on notes need it.
+ */
+function authorizeDrive() { DriveApp.getRootFolder(); }
+
+
+// ═════════════════════════ DEMO VESSEL (for showing customers) ═════════════════════════
+/**
+ * Run once from the Apps Script editor: choose "createDemoVessel" next to Run, then press Run.
+ * Builds M/Y Meridian Star (118 ft) with 5 crew, an owner and a contractor, a full maintenance program,
+ * history, notes, work reviews and crew profiles. Every demo account uses an @meridianstar.test address:
+ * that domain cannot receive mail and the script never emails it. Demo crew are hidden from real customers in Find crew.
+ * Log in as any of them with DEMO_PASSWORD. To take it all down later, run removeDemoVessel.
+ */
+const DEMO_VESSEL = 'M/Y Meridian Star';
+const DEMO_PASSWORD = 'Meridian2026';
+
+function createDemoVessel() {
+  return withLock(() => {
+    if (readTable('Vessels').some(v => v.name === DEMO_VESSEL)) throw new Error(DEMO_VESSEL + ' already exists. Run removeDemoVessel first to rebuild it.');
+    const admin = readTable('Users').find(u => isTrue(u.isAdmin) && isTrue(u.active));
+    const D = (n) => addInterval(today(), n, 'days');
+    const at = (n, hh) => D(n) + 'T' + (hh || '14') + ':00:00Z';
+    const P = {};
+    const person = (key, name, email, profile) => {
+      if (readTable('Users').some(u => u.email === email)) throw new Error(email + ' already exists');
+      const salt = Utilities.getUuid(), id = newId('U');
+      insert('Users', { id, name, email, passwordHash: hash(DEMO_PASSWORD, salt), salt, active: 'TRUE', isAdmin: 'FALSE', createdAt: at(-700) });
+      P[key] = id;
+      if (profile) insert('Profiles', Object.assign({ userId: id, photo: '', showContact: 'TRUE', updatedAt: at(-3), shareReviews: 'FALSE', shareId: '' }, profile,
+        { certifications: JSON.stringify(profile.certifications || []), experience: JSON.stringify(profile.experience || []) }));
+    };
+    person('captain', 'Ryan Calder', 'ryan.calder@meridianstar.test', {
+      headline: 'Captain / Master 3000GT', location: 'Fort Lauderdale, FL', operatingArea: 'Florida, Bahamas, Caribbean, Mediterranean',
+      yearsExperience: '18', availability: 'Employed', phone: '+1 (555) 010-0101', languages: 'English, Spanish',
+      bio: 'Eighteen years on motor yachts from 30 to 60 m. Runs a tight maintenance program and a calm bridge. Med and Caribbean seasons, Atlantic crossings.',
+      shareReviews: 'TRUE', shareId: 'demoryancalder01',
+      certifications: [{ name: 'Master 3000GT (Yacht)', expires: D(1100) }, { name: 'STCW Basic Safety Training', expires: D(640) },
+                       { name: 'ENG1 Medical', expires: D(38) }, { name: 'GMDSS GOC', expires: D(1500) }, { name: 'Ship Security Officer', expires: '' }],
+      experience: [{ vessel: 'M/Y Atlantic Breeze (52 m)', position: 'Captain', years: '2019–2024', notes: 'Two Atlantic crossings, Med and Caribbean seasons' },
+                   { vessel: 'M/Y Solara (40 m)', position: 'Chief Officer', years: '2014–2019', notes: '' }] });
+    person('chief', 'Marco Bellini', 'marco.bellini@meridianstar.test', {
+      headline: 'Chief Engineer Y2', location: 'Fort Lauderdale, FL', operatingArea: 'Florida, Bahamas, Mediterranean',
+      yearsExperience: '14', availability: 'Employed', phone: '+1 (555) 010-0102', languages: 'Italian, English',
+      bio: 'MTU and CAT specialist. Keeps clean engine rooms and complete logs. Refit experience in Viareggio and Fort Lauderdale.',
+      certifications: [{ name: 'Y2 Engineer Certificate of Competency', expires: D(900) }, { name: 'STCW Basic Safety Training', expires: D(420) },
+                       { name: 'ENG1 Medical', expires: D(-12) }, { name: 'MTU Series 2000 factory course', expires: '' }],
+      experience: [{ vessel: 'M/Y Corsara (45 m)', position: 'Chief Engineer', years: '2018–2024', notes: 'Full refit, new stabilizers' }] });
+    person('bosun', 'Jake Turner', 'jake.turner@meridianstar.test', {
+      headline: 'Bosun, RYA Yachtmaster Offshore', location: 'Palma de Mallorca', operatingArea: 'Mediterranean, Caribbean, Florida',
+      yearsExperience: '8', availability: 'Employed', phone: '+1 (555) 010-0103', languages: 'English',
+      bio: 'Deck lead who loves a well-kept tender and a perfect varnish. PWC and watersports instructor.',
+      certifications: [{ name: 'RYA Yachtmaster Offshore', expires: '' }, { name: 'STCW Basic Safety Training', expires: D(300) },
+                       { name: 'PWC Instructor', expires: D(200) }, { name: 'ENG1 Medical', expires: D(260) }],
+      experience: [{ vessel: 'M/Y Blue Haven (38 m)', position: 'Lead Deckhand', years: '2019–2023', notes: '' }] });
+    person('stew', 'Sophie Laurent', 'sophie.laurent@meridianstar.test', {
+      headline: 'Chief Stewardess', location: 'Antibes, France', operatingArea: 'Mediterranean, Caribbean',
+      yearsExperience: '10', availability: 'Employed', phone: '+1 (555) 010-0104', languages: 'French, English, Italian',
+      bio: 'Five-star guest service, wine and floral. Builds calm, well-trained interior teams.',
+      certifications: [{ name: 'GUEST Interior Management', expires: '' }, { name: 'WSET Level 3 Wines', expires: '' },
+                       { name: 'STCW Basic Safety Training', expires: D(510) }, { name: 'Food Safety Level 2', expires: D(75) }, { name: 'ENG1 Medical', expires: D(330) }],
+      experience: [{ vessel: 'M/Y Lumiere (47 m)', position: 'Second Stewardess', years: '2016–2021', notes: '' }] });
+    person('deckhand', "Liam O'Neill", 'liam.oneill@meridianstar.test', {
+      headline: 'Deckhand, RYA Powerboat Level 2', location: 'Fort Lauderdale, FL', operatingArea: 'Florida, Bahamas',
+      yearsExperience: '2', availability: 'Open to offers', phone: '+1 (555) 010-0105', languages: 'English',
+      bio: 'Second season on yachts. Tender driving, washdowns, line handling and a fast learner on the engineering side.',
+      certifications: [{ name: 'STCW Basic Safety Training', expires: D(1200) }, { name: 'RYA Powerboat Level 2', expires: '' }, { name: 'ENG1 Medical', expires: D(500) }],
+      experience: [{ vessel: 'M/Y Seabird (30 m)', position: 'Deckhand', years: '2024', notes: 'Bahamas season' }] });
+    person('owner', 'Daniel Hart', 'daniel.hart@meridianstar.test', null);
+    person('contractor', 'Coastline Stabilizer Service', 'service@coastline-stab.test', {
+      headline: 'Stabilizer and hydraulics technician', location: 'Fort Lauderdale, FL', operatingArea: 'Florida', yearsExperience: '12',
+      availability: 'Available', phone: '+1 (555) 010-0107', languages: 'English', certifications: [], experience: [] });
+
+    const vid = newId('V');
+    insert('Vessels', { id: vid, name: DEMO_VESSEL, type: 'Motor yacht', length: '118 ft (36 m)', homePort: 'Fort Lauderdale, FL',
+                        active: 'TRUE', createdAt: at(-700), createdBy: admin ? admin.id : '' });
+    const member = (key, title, access, depts, joined) => insert('Memberships', { id: newId('M'), vesselId: vid, userId: P[key], position: title, status: 'active',
+      joinedAt: at(joined), leftAt: '', invitedBy: admin ? admin.id : '', access, departments: depts.join(',') });
+    member('owner', 'Yacht Owner', 'oversight', [], -700);
+    member('captain', 'Captain / Master', 'command', [], -540);
+    member('chief', 'Chief Engineer', 'lead', ['engine'], -420);
+    member('bosun', 'Bosun (Deck Supervisor)', 'lead', ['deck'], -300);
+    member('stew', 'Chief Steward / Stewardess', 'lead', ['interior', 'galley'], -260);
+    member('deckhand', 'Deckhand', 'supervised', [], -130);
+    member('contractor', 'Independent Contractor / External Technician', 'contractor', [], -20);
+    audit(admin ? admin.id : '', 'createVessel', '', DEMO_VESSEL + ' (demo)', vid);
+
+    const NOTE = { done: ['All within limits, logged in engine book.', 'Done, no issues found.', 'Completed, photos in the notes.', 'Replaced as per OEM manual.', 'Checked and tested OK.'] };
+    let n = 0;
+    const task = (o) => {
+      const id = newId('T'), issue = o.type === 'Issue', every = o.every || '', unit = o.unit || '';
+      const t = { id, title: o.title, description: o.desc || '', system: o.system, type: issue ? 'Issue' : 'Routine',
+        dueDate: issue ? '' : D(o.due), dueTime: '', recurring: every ? 'TRUE' : 'FALSE', intervalValue: every, intervalUnit: unit,
+        assignedTo: o.to ? P[o.to] : '', state: o.state || 'Open', createdBy: P[o.by || 'captain'], createdAt: at(o.created || -360),
+        lastPerformed: '', lastPerformedBy: '', resolution: o.resolution || '', reminderLog: '', vesselId: vid };
+      audit(t.createdBy, 'create', id, t.type + ': ' + t.title, vid);
+      // past sign-offs for recurring jobs, working back from the current due date
+      const history = [];
+      if (every && o.past) {
+        let due = t.dueDate;
+        for (let i = 0; i < o.past; i++) {
+          due = addInterval(due, -every, unit);
+          if (due < D(-330)) break;
+          const late = (n++ % 5 === 3) ? 3 : 0;
+          const performed = addInterval(due, late ? late : -1, 'days');
+          if (performed > today()) continue;
+          history.unshift({ due, performed, late });
+        }
+      }
+      history.forEach((h, i) => {
+        const cid = newId('X'), who = P[o.to || 'captain'], note = NOTE.done[(n + i) % NOTE.done.length];
+        insert('Completions', { id: cid, taskId: id, dueDate: h.due, performedDate: h.performed, performedBy: who,
+          timing: h.late ? 'Late by ' + h.late + 'd' : 'On time', notes: note, loggedAt: h.performed + 'T16:00:00Z' });
+        insert('Notes', { id: newId('N'), taskId: id, userId: who, text: note, createdAt: h.performed + 'T16:00:00Z' });
+        audit(who, 'complete', id, 'Performed ' + h.performed, vid);
+        t.lastPerformed = h.performed; t.lastPerformedBy = who;
+        if (o.review && i === history.length - 1 && who !== P.captain) {
+          const r = o.review;
+          insert('TaskReviews', { id: newId('R'), vesselId: vid, taskId: id, completionId: cid, userId: who, requestedAt: h.performed + 'T17:00:00Z',
+            message: 'Could you review this one?', status: r.score ? 'reviewed' : 'requested', reviewerId: r.score ? P.captain : '',
+            score: r.score ? String(r.score) : '', text: r.text || '', reviewedAt: r.score ? addInterval(h.performed, 1, 'days') + 'T09:00:00Z' : '' });
+        }
+      });
+      if (o.issueDone) {
+        const cid = newId('X');
+        insert('Completions', { id: cid, taskId: id, dueDate: '', performedDate: D(o.issueDone), performedBy: P[o.to], timing: 'No due date',
+          notes: o.resolution, loggedAt: at(o.issueDone) });
+        t.lastPerformed = D(o.issueDone); t.lastPerformedBy = P[o.to];
+        audit(P[o.to], 'complete', id, 'Resolved ' + D(o.issueDone) + ': ' + o.resolution, vid);
+      }
+      insert('Tasks', t);
+      (o.notes || []).forEach(([who, text, day]) => {
+        insert('Notes', { id: newId('N'), taskId: id, userId: P[who], text, createdAt: at(day) });
+        audit(P[who], 'note', id, text.slice(0, 100), vid);
+      });
+      return id;
+    };
+
+    // Engineering
+    task({ title: 'Main engines oil & filter change (port and starboard)', system: 'Main engines', due: -4, every: 3, unit: 'months', to: 'chief', by: 'chief', past: 3,
+           desc: 'MTU 16V 2000 M96. 2 x 290 L oil, 4 oil filters per engine. Take oil samples for analysis.', review: { score: 9, text: 'Spotless job and samples sent the same day.' },
+           notes: [['chief', 'Oil and filters aboard. Starting tomorrow 0700, engines need 12 h to cool.', -1]] });
+    task({ title: 'Main engine raw-water pump impellers', system: 'Main engines', due: 6, every: 12, unit: 'months', to: 'chief', by: 'chief', past: 1 });
+    task({ title: 'Main engine and shaft zinc anodes', system: 'Main engines', due: 45, every: 6, unit: 'months', to: 'chief', by: 'chief', past: 1 });
+    task({ title: 'Generator 1 service (oil, filters, belts, impeller)', system: 'Generators', due: 3, every: 3, unit: 'months', to: 'chief', by: 'chief', past: 3,
+           desc: 'Northern Lights 40 kW. Check exhaust elbow for carbon.' });
+    task({ title: 'Generator 2 service (oil, filters, belts, impeller)', system: 'Generators', due: 33, every: 3, unit: 'months', to: 'chief', by: 'chief', past: 3 });
+    task({ title: 'Fuel filter elements (Racor 30 micron)', system: 'Fuel', due: -1, every: 1, unit: 'months', to: 'chief', by: 'chief', past: 6 });
+    task({ title: 'Fuel polishing and tank sounding', system: 'Fuel', due: 19, every: 3, unit: 'months', to: 'chief', by: 'chief', past: 2 });
+    task({ title: 'Watermaker membrane flush and pre-filters', system: 'Plumbing & water', due: 2, every: 2, unit: 'weeks', to: 'deckhand', by: 'chief', past: 8,
+           review: { score: 8, text: 'Good work. Log the TDS reading every time.' } });
+    task({ title: 'Chiller seawater strainers', system: 'HVAC', due: 12, every: 1, unit: 'months', to: 'chief', by: 'chief', past: 6 });
+    task({ title: 'Stabilizer hydraulic oil and seal inspection', system: 'Steering & stabilizers', due: 20, every: 6, unit: 'months', to: 'chief', by: 'chief', past: 1 });
+    task({ title: 'House and start battery load test', system: 'Electrical', due: 60, every: 6, unit: 'months', to: 'chief', by: 'chief', past: 1 });
+    task({ title: 'Radar, AIS and chart plotter function check', system: 'Navigation & electronics', due: 8, every: 1, unit: 'months', to: 'captain', by: 'captain', past: 6 });
+    // Deck and safety
+    task({ title: 'Life raft annual service (2 x 12-person)', system: 'Safety equipment', due: 41, every: 12, unit: 'months', to: 'bosun', by: 'captain', past: 1,
+           desc: 'Book with the approved service station two weeks ahead. Swap with loan rafts.' });
+    task({ title: 'EPIRB and SART battery and hydrostatic release check', system: 'Safety equipment', due: 18, every: 12, unit: 'months', to: 'captain', by: 'captain', past: 1 });
+    task({ title: 'Fire extinguisher monthly inspection', system: 'Safety equipment', due: 5, every: 1, unit: 'months', to: 'deckhand', by: 'bosun', past: 6,
+           review: { score: 10, text: 'Thorough, every tag signed and dated.' } });
+    task({ title: 'Monthly fire and abandon-ship drill', system: 'Safety equipment', due: 11, every: 1, unit: 'months', to: 'captain', by: 'captain', past: 6 });
+    task({ title: 'Teak deck clean and seal', system: 'Hull & deck', due: 16, every: 1, unit: 'months', to: 'deckhand', by: 'bosun', past: 6,
+           review: { score: 0 } });
+    task({ title: 'Anchor windlass service and chain inspection', system: 'Hull & deck', due: -7, every: 6, unit: 'months', to: 'bosun', by: 'bosun', past: 1,
+           notes: [['bosun', 'Waiting on the new gypsy seal kit. ETA Friday.', -2]] });
+    task({ title: 'Tender outboard 100-hour service', system: 'Tender & toys', due: 25, every: 3, unit: 'months', to: 'bosun', by: 'bosun', past: 2 });
+    task({ title: 'Jet ski winterization check', system: 'Tender & toys', due: 70, every: 6, unit: 'months', to: 'bosun', by: 'bosun', past: 1 });
+    // Interior, galley, medical
+    task({ title: 'Guest cabins deep clean and linen rotation', system: 'Interior', due: 2, every: 1, unit: 'weeks', to: 'stew', by: 'stew', past: 10 });
+    task({ title: 'Interior inventory count (linen, amenities, glassware)', system: 'Interior', due: 9, every: 1, unit: 'months', to: 'stew', by: 'stew', past: 5 });
+    task({ title: 'Galley hood filters degrease', system: 'Galley', due: 4, every: 1, unit: 'months', to: 'stew', by: 'stew', past: 6 });
+    task({ title: 'Medical kit expiry check', system: 'Medical', due: 27, every: 3, unit: 'months', to: 'captain', by: 'captain', past: 2 });
+    // One-time and contractor
+    task({ title: 'Annual stabilizer service (contractor visit)', system: 'Steering & stabilizers', due: 14, to: 'contractor', by: 'captain',
+           desc: 'Coastline Stabilizer Service on board 0800. Chief Engineer to attend.' });
+    task({ title: 'Haul-out survey preparation', system: 'Hull & deck', due: 55, to: 'bosun', by: 'captain', desc: 'Insurance survey at the yard. Empty bilges, open all hatches.' });
+    // Open issues
+    task({ title: 'Port generator running 8°C hot at full load', system: 'Generators', type: 'Issue', to: 'chief', by: 'deckhand', created: -6,
+           notes: [['deckhand', 'Noticed the high temp alarm at 85% load during the passage to Nassau.', -6],
+                   ['chief', 'Heat exchanger likely scaled. Descaling kit ordered, will strip it on Tuesday.', -4]] });
+    task({ title: 'Bow thruster intermittent fault on the bridge panel', system: 'Electrical', type: 'Issue', to: 'chief', by: 'captain', created: -3,
+           notes: [['captain', 'Lost bow thruster twice while docking. Works from the wing station.', -3]] });
+    task({ title: 'Guest cabin 3 AC not cooling', system: 'HVAC', type: 'Issue', to: 'chief', by: 'stew', created: -1 });
+    // Resolved issues
+    task({ title: 'Starboard bilge pump float switch stuck', system: 'Plumbing & water', type: 'Issue', state: 'Resolved', to: 'chief', by: 'bosun', created: -24,
+           issueDone: -21, resolution: 'Float switch replaced with a Rule 35A. Tested with water, alarm working.' });
+    task({ title: 'Crew mess hot water heater not heating', system: 'Plumbing & water', type: 'Issue', state: 'Resolved', to: 'chief', by: 'stew', created: -50,
+           issueDone: -46, resolution: 'Element burnt out. Replaced 3 kW element and thermostat.' });
+
+    // Recommendations (1–5 stars) from the Captain and the Owner
+    const rec = (who, by, rating, text, day) => insert('Reviews', { id: newId('RV'), userId: P[who], reviewerId: P[by], vesselId: vid,
+      rating: String(rating), text, createdAt: at(day), updatedAt: at(day) });
+    rec('captain', 'owner', 5, 'Ryan runs the boat like a watch. Guests always comment on the crew.', -60);
+    rec('chief', 'captain', 5, 'The best-kept engine room I have sailed with. Never a surprise.', -40);
+    rec('bosun', 'captain', 4, 'Strong deck lead, great with the tender and toys.', -35);
+    rec('stew', 'captain', 5, 'Guests ask for Sophie by name.', -30);
+    rec('deckhand', 'captain', 4, 'Hard-working, learns fast, ready for more responsibility.', -15);
+    return ['Created ' + DEMO_VESSEL + '. Log in with any @meridianstar.test account, password ' + DEMO_PASSWORD + '.'];
+  });
+}
+
+/** Archives the demo vessel and deactivates its demo accounts. History stays in the sheet; nothing real is touched. */
+function removeDemoVessel() {
+  return withLock(() => {
+    const v = readTable('Vessels').find(x => x.name === DEMO_VESSEL);
+    if (v) { v.active = 'FALSE'; v.name = DEMO_VESSEL + ' (removed ' + today() + ')'; update('Vessels', v._row, v); }
+    readTable('Users').filter(u => /@(meridianstar|coastline-stab)\.test$/.test(u.email)).forEach(u => {
+      u.active = 'FALSE'; u.email = u.email + '.removed' + Date.now(); update('Users', u._row, u);
+    });
+    return ['Demo vessel archived and demo accounts deactivated'];
+  });
 }

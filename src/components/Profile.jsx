@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { call } from '../api.js';
 import { AVAILABILITY } from '../util.js';
 import Avatar from './Avatar.jsx';
+import PasswordRule, { PASSWORD_MIN, passwordProblem } from './PasswordRule.jsx';
 import BusinessCard from './BusinessCard.jsx';
 import ProfileView from './ProfileView.jsx';
 
@@ -215,9 +216,10 @@ export default function Profile({ user, onChanged }) {
         <form className="form card" onSubmit={changePw}>
           <div className="two">
             <label>Current password<input type="password" autoComplete="current-password" value={pw.oldPassword} onChange={(e) => setPw({ ...pw, oldPassword: e.target.value })} required /></label>
-            <label>New password<input type="password" autoComplete="new-password" minLength={6} value={pw.newPassword} onChange={(e) => setPw({ ...pw, newPassword: e.target.value })} required /></label>
+            <label>New password<input type="password" autoComplete="new-password" minLength={PASSWORD_MIN} value={pw.newPassword} onChange={(e) => setPw({ ...pw, newPassword: e.target.value })} required /></label>
           </div>
-          <div className="actions left"><button className="btn primary">Change password</button></div>
+          <PasswordRule value={pw.newPassword} />
+          <div className="actions left"><button className="btn primary" disabled={!!passwordProblem(pw.newPassword)}>Change password</button></div>
         </form>
       )}
     </div>

@@ -68,6 +68,22 @@ React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
 5. Web addresses typed or pasted in notes, descriptions, resolutions and the activity log are clickable.
 6. CJM admin tab should show `Google Script version: 2.5 (photos and files on notes)`.
 
+## Upgrade to 2.6 (login codes, 15-character passwords)
+1. Paste the new `apps-script/Code.gs` into Apps Script, save, then Deploy → Manage deployments → pencil → **New version** → Deploy.
+2. Upload this folder to GitHub.
+3. CJM admins and anyone with Command or Owner oversight access on a vessel now get a 6-digit code by email after entering their password, at every login.
+   The code works for 10 minutes (`CONFIG.LOGIN_CODE_MINUTES`), 5 wrong tries cancel it, and at most 5 codes are sent per 15 minutes.
+   Demo/test accounts (.test addresses) skip the code. Password reset and new-account setup links already prove the email, so they log in directly.
+4. New and changed passwords must be at least 15 characters with letters and numbers (`CONFIG.PASSWORD_MIN`). Existing passwords keep working until changed.
+5. CJM admin tab should show `Google Script version: 2.6 (login codes, 15-character passwords)`.
+
+## Demo vessel (2.5.1)
+- In Apps Script choose `createDemoVessel` next to Run and press Run (about a minute). It builds **M/Y Meridian Star** (118 ft) with 5 crew, an owner and a contractor.
+- Demo logins (password `Meridian2026`): ryan.calder@ (Captain), marco.bellini@ (Chief Engineer), jake.turner@ (Bosun), sophie.laurent@ (Chief Stewardess),
+  liam.oneill@ (Deckhand), daniel.hart@ (Owner) — all `@meridianstar.test` — and service@coastline-stab.test (contractor).
+- `.test` addresses never receive email: the script skips them. Demo crew are hidden from real customers in Find crew.
+- To take it down: run `removeDemoVessel`.
+
 ## Fresh install
 Same as above on a new, empty Google Sheet. `setupPlatform()` creates the tabs and your admin account. Then create vessels from the CJM admin tab.
 

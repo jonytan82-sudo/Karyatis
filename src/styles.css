@@ -259,6 +259,7 @@ h3 { font-size: 1.25rem; }
 }
 .sheet {
   background: var(--paper);
+  color: var(--ink); /* pop-ups opened from the dark phone menu must not inherit its white text */
   width: 100%;
   max-width: 560px;
   border-radius: 10px;
@@ -870,3 +871,9 @@ a.btn { text-decoration: none; display: inline-block; color: inherit; }
 .viewer-body iframe { width: 100%; height: 100%; border: 0; background: #fff; border-radius: 4px; }
 .viewer-wait { color: #dbe6ec; }
 .notes .att-list li { border-left: 0; padding: 0; margin: 0; }
+
+/* ── Login code and password rule ── */
+.verify-note { margin: 0; font-size: 0.95rem; color: var(--ink-2); background: var(--chart); border-radius: 6px; padding: 0.7rem 0.8rem; }
+.code-input { font-size: 1.6rem !important; letter-spacing: 0.4em; text-align: center; font-variant-numeric: tabular-nums; }
+.pw-rule { list-style: none; margin: -0.4rem 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.3rem 1rem; font-size: 0.85rem; color: var(--muted); }
+.pw-rule li.met { color: var(--green); font-weight: 600; }
