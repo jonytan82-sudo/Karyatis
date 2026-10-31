@@ -30,7 +30,7 @@ export default function Login({ onLogin }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
-  const [req, setReq] = useState({ name: '', kind: startKind, position: '', vesselName: '', message: '' });
+  const [req, setReq] = useState({ name: '', kind: startKind, position: '', vesselName: params.get('vessel') || '', message: '' });
   const [setupName, setSetupName] = useState('');
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');

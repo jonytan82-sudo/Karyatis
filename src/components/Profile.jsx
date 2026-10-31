@@ -5,6 +5,7 @@ import Avatar from './Avatar.jsx';
 import PasswordRule, { PASSWORD_MIN, passwordProblem } from './PasswordRule.jsx';
 import BusinessCard from './BusinessCard.jsx';
 import ProfileView from './ProfileView.jsx';
+import MyJobs from './MyJobs.jsx';
 
 function RecordBackup() {
   const [msg, setMsg] = useState('');
@@ -47,7 +48,7 @@ function resizePhoto(file) {
   });
 }
 
-const SUBTABS = [['edit', 'Edit profile'], ['preview', 'Preview and reviews'], ['card', 'Business card'], ['password', 'Password']];
+const SUBTABS = [['edit', 'Edit profile'], ['preview', 'Preview and reviews'], ['jobs', 'Jobs and approvals'], ['card', 'Business card'], ['password', 'Password']];
 
 export default function Profile({ user, onChanged }) {
   const [data, setData] = useState(null);
@@ -209,6 +210,8 @@ export default function Profile({ user, onChanged }) {
           <div className="card"><ProfileView data={data} /></div>
         </>
       )}
+
+      {sub === 'jobs' && <MyJobs />}
 
       {sub === 'card' && data && <BusinessCard profile={data.profile} onEnableSharing={enableSharing} />}
 

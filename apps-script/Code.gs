@@ -1,4 +1,4 @@
-/**   
+/**
  * CJM MARINE — Multi-vessel maintenance platform and crew directory
  * Google Apps Script backend, bound to one Google Sheet.
  *
@@ -14,7 +14,7 @@
  *                body: JSON.stringify({ action, token, vesselId, ... }) })
  */
 
-const SCRIPT_VERSION = '2.9 (delete, download and upload vessels)';
+const SCRIPT_VERSION = '3.1 (crew suggestions and job approvals)';
 
 // ───────────────────────── CONFIG ─────────────────────────
 const CONFIG = {
@@ -25,6 +25,7 @@ const CONFIG = {
   OVERDUE_REMIND_EVERY: 3,     // days between repeat emails for overdue items
   RECUR_FROM: 'performed',     // 'performed' = next due counts from date done; 'due' = from old due date
   SESSION_DAYS: 30,
+  REQUEST_NOTIFY: ['support@cjm-aero.com'], // also emailed for every new account and yacht request (CJM admins always are)
   PASSWORD_MIN: 15,            // new passwords: at least this long, with letters and numbers
   LOGIN_CODE_MINUTES: 10,      // admins, captains and owners get an emailed code at every login; it works this long            // people stay logged in this long
   SETUP_LINK_DAYS: 7,          // how long an account setup link works
@@ -48,6 +49,11 @@ const SHEETS = {
   Vessels:     ['id', 'name', 'type', 'length', 'homePort', 'active', 'createdAt', 'createdBy', 'deletedAt'],
   VesselRequests: ['id', 'userId', 'name', 'type', 'length', 'homePort', 'role', 'message', 'status',
                    'createdAt', 'handledBy', 'handledAt', 'vesselId', 'note'],
+  // Rotation & handover
+  Rotations:       ['id', 'vesselId', 'userId', 'onDays', 'offDays', 'startDate', 'reliefId', 'active', 'createdBy', 'createdAt', 'updatedAt'],
+  RotationChanges: ['id', 'vesselId', 'userId', 'type', 'fromDate', 'toDate', 'note', 'status', 'requestedAt', 'handledBy', 'handledAt'],
+  RotationRules:   ['vesselId', 'group', 'min'],
+  Handovers:       ['id', 'vesselId', 'fromUserId', 'toUserId', 'changeDate', 'autoSummary', 'note', 'status', 'createdAt', 'sentAt', 'acceptedAt', 'acceptedBy'],
   Memberships: ['id', 'vesselId', 'userId', 'position', 'status', 'joinedAt', 'leftAt', 'invitedBy', 'access', 'departments'],
   Sessions:    ['token', 'userId', 'expiresAt'],
   Tokens:      ['token', 'userId', 'purpose', 'expiresAt', 'used'],
@@ -63,7 +69,12 @@ const SHEETS = {
   Attachments: ['id', 'vesselId', 'taskId', 'noteId', 'fileId', 'name', 'mimeType', 'size', 'thumb', 'userId', 'createdAt'],
   StoredFiles: ['id', 'data'], // staging only: file contents kept in the sheet instead of Google Drive
   TaskReviews: ['id', 'vesselId', 'taskId', 'completionId', 'userId', 'requestedAt', 'message',
-                'status', 'reviewerId', 'score', 'text', 'reviewedAt', 'taskTitle'],
+                'status', 'reviewerId', 'score', 'text', 'reviewedAt', 'taskTitle', 'vesselName', 'reviewerLabel', 'reviewerName', 'workDate'],
+  // Crew suggestions, unlisted work and jobs on other boats, waiting for a Captain or Owner
+  WorkSubmissions: ['id', 'kind', 'vesselId', 'boatName', 'userId', 'title', 'system', 'description', 'performedDate',
+                    'dueDate', 'recurring', 'intervalValue', 'intervalUnit', 'wantScore', 'contactEmail', 'contactName',
+                    'token', 'tokenExpires', 'status', 'decidedBy', 'decidedLabel', 'decidedAt', 'decisionNote',
+                    'score', 'reviewText', 'taskId', 'completionId', 'createdAt'],
   Audit:       ['timestamp', 'userId', 'action', 'taskId', 'details', 'vesselId']
 };
 
@@ -322,6 +333,9 @@ function doPost(e) {
       getSetup:       () => getSetup(req.setupToken),
       completeSetup:  () => withLock(() => completeSetup(req.setupToken, req.newPassword)),
       publicReviews:  () => publicReviews(req.shareId),
+      getWorkReview:  () => getWorkReview(req.reviewToken),
+      answerWorkReview: () => withLock(() => answerWorkReview(req.reviewToken, req.answer || {})),
+      workReviewFile: () => workReviewFile(req.reviewToken, req.id),
       catalog:        () => ({ ok: true, catalog: roleCatalog() })
     };
     if (pub[req.action]) return json(pub[req.action]());
@@ -348,6 +362,13 @@ function doPost(e) {
       submitTaskReview:  () => withLock(() => submitTaskReview(V(), user, req.reviewId, req.score, req.text)),
       skipTaskReview:    () => withLock(() => skipTaskReview(V(), user, req.reviewId)),
       emailMyRecord:     () => emailMyRecord(user),
+
+      // crew suggestions, unlisted work and jobs on other boats
+      submitWork:     () => withLock(() => submitWork(user, req.work || {})),
+      myWork:         () => ({ ok: true, submissions: mySubmissions(user) }),
+      cancelWork:     () => withLock(() => cancelWork(user, req.id)),
+      decideWork:     () => withLock(() => decideWork(V(), user, req.id, req.decision || {})),
+      getWorkFile:    () => getWorkFile(user, req.id),
 
       // vessel crew
       listCrew:       () => ({ ok: true, crew: listCrew(V()) }),
@@ -378,6 +399,16 @@ function doPost(e) {
       deleteVessel:   () => { requireAdmin(user); return withLock(() => deleteVessel(user, req.id, req.confirmName)); },
       exportVessel:   () => { requireAdmin(user); return exportVessel(user, req.id, req.withFiles !== false); },
       importVessel:   () => { requireAdmin(user); return withLock(() => importVessel(user, req.package)); },
+
+      // rotation & handover
+      rotationView:          () => rotationView(V(), user, req),
+      saveRotation:          () => withLock(() => saveRotation(V(), user, req.rotation || {})),
+      setManning:            () => withLock(() => setManning(V(), user, req.rules || {})),
+      requestRotationChange: () => withLock(() => requestRotationChange(V(), user, req.change || {})),
+      decideRotationChange:  () => withLock(() => decideRotationChange(V(), user, req.id, !!req.approve)),
+      startHandover:         () => withLock(() => startHandover(V(), user, req)),
+      sendHandover:          () => withLock(() => sendHandover(V(), user, req)),
+      acceptHandover:        () => withLock(() => acceptHandover(V(), user, req.id)),
       sendBackupNow:  () => { requireAdmin(user); return sendBackupNow(user, req.backupVesselId); },
 
       // new yacht requests from owners and captains
@@ -660,7 +691,8 @@ function bootstrap(user, vesselId) {
       out.crew = listCrew(c);
       out.vesselRequests = c.perms.manageCrew ? requestsVisibleTo(user, c.vessel.id).length : 0;
       out.canReviewWork = isVesselReviewer(c.vessel.id, user.id);
-      out.pendingTaskReviews = out.canReviewWork ? pendingReviewsFor(c.vessel.id, user.id).length : 0;
+      out.pendingTaskReviews = out.canReviewWork ? pendingReviewsFor(c.vessel.id, user.id).length + pendingWorkFor(c.vessel.id, user.id).length : 0;
+      out.canSubmitWork = !!c.membership && !c.perms.viewOnly;
     } catch (e) { /* not a member any more: frontend shows the vessel picker */ }
   }
   return out;
@@ -911,13 +943,8 @@ function requestAccount(r) {
     message: String(r.message || '').trim().slice(0, 1000),
     status: 'pending', createdAt: nowIso(), handledBy: '', handledAt: ''
   });
-  const admins = readTable('Users').filter(u => isTrue(u.isAdmin) && isTrue(u.active)).map(u => u.email);
-  if (admins.length) {
-    sendMail(admins.join(','), 'New account request: ' + name,
-      '<p><b>' + esc(name) + '</b> (' + esc(email) + ') asked for a ' + esc(kind) + ' account' +
-      (r.vesselName ? ' for <b>' + esc(r.vesselName) + '</b>' : '') + '.</p>' +
-      (r.message ? '<p>' + esc(r.message) + '</p>' : '') + appLink());
-  }
+  notifyNewRequest({ name, email, kind, position: TITLES[r.position] ? r.position : '', vesselName: String(r.vesselName || '').trim(),
+                     message: String(r.message || '').trim() });
   return { ok: true, message: 'Request sent. You will get an email when your account is ready.' };
 }
 
@@ -1004,7 +1031,7 @@ function vesselHistory(userId) {
                  length: vessels[m.vesselId].length, position: titleOf(m.position),
                  from: (m.joinedAt || '').slice(0, 10), to: m.status === 'left' ? (m.leftAt || '').slice(0, 10) : '',
                  current: m.status === 'active', contractor: permsOfMember(m).contractor,
-                 days: m.joinedAt && !permsOfMember(m).contractor ? Math.max(0, daysBetween(m.joinedAt.slice(0, 10), m.status === 'left' && m.leftAt ? m.leftAt.slice(0, 10) : today())) : 0 }))
+                 days: seaDays(m) }))
     .sort((a, b) => (b.from || '') < (a.from || '') ? -1 : 1);
 }
 
@@ -1290,7 +1317,8 @@ function listTaskReviews(c, user) {
     pending: all.filter(r => r.status === 'requested').sort((a, b) => a.requestedAt < b.requestedAt ? -1 : 1)
       .map(r => reviewView(r, names, tasks, comps)),
     done: all.filter(r => r.status !== 'requested').sort((a, b) => a.reviewedAt < b.reviewedAt ? 1 : -1).slice(0, 30)
-      .map(r => reviewView(r, names, tasks, comps))
+      .map(r => reviewView(r, names, tasks, comps)),
+    approvals: approvalsFor(c, user)
   };
 }
 
@@ -1340,10 +1368,11 @@ function performanceOf(userId, withNames) {
   const roleOf = (uid, vid) => { const m = ms.find(x => x.userId === uid && x.vesselId === vid); return m ? titleOf(m.position) : 'Captain / Master'; };
   const items = readTable('TaskReviews').filter(r => r.userId === userId && r.status === 'reviewed')
     .sort((a, b) => a.reviewedAt < b.reviewedAt ? 1 : -1)
-    .map(r => ({ date: (comps[r.completionId] || {}).performedDate || (r.reviewedAt || '').slice(0, 10),
+    .map(r => ({ date: (comps[r.completionId] || {}).performedDate || r.workDate || (r.reviewedAt || '').slice(0, 10),
                  task: (tasks[r.taskId] || {}).title || r.taskTitle || '', system: (tasks[r.taskId] || {}).system || '',
-                 vesselName: vessels[r.vesselId] || '', score: Number(r.score), text: r.text,
-                 by: roleOf(r.reviewerId, r.vesselId) + (withNames && names[r.reviewerId] ? ' ' + names[r.reviewerId] : '') }));
+                 vesselName: vessels[r.vesselId] || r.vesselName || '', score: Number(r.score), text: r.text,
+                 by: r.reviewerLabel ? r.reviewerLabel + (withNames && r.reviewerName ? ' ' + r.reviewerName : '') + ' (confirmed by email)'
+                   : roleOf(r.reviewerId, r.vesselId) + (withNames && names[r.reviewerId] ? ' ' + names[r.reviewerId] : '') }));
   const avg = items.length ? items.reduce((s, x) => s + x.score, 0) / items.length : 0;
   return { average: Math.round(avg * 10) / 10, count: items.length, items };
 }
@@ -1766,7 +1795,10 @@ function readFile(fileId) {
 function getAttachment(c, user, id) {
   const a = readTable('Attachments').find(x => x.id === id && x.vesselId === c.vessel.id);
   if (!a) throw new Error('File not found');
-  taskIn(c, a.taskId); // same visibility as the task (contractors: own jobs only)
+  if (String(a.taskId).indexOf('HO:') === 0) {
+    const h = handoversVisible(c, user).find(x => 'HO:' + x.id === a.taskId);
+    if (!h) throw new Error('File not found');
+  } else taskIn(c, a.taskId); // same visibility as the task (contractors: own jobs only)
   return { ok: true, name: a.name, mimeType: a.mimeType, data: readFile(a.fileId) };
 }
 
@@ -2091,7 +2123,7 @@ const TABLE_CACHE = {}; // lives for one request only
 
 const HEADERS_CHECKED = {};
 
-const AUTO_TABS = ['TaskReviews', 'Attachments', 'StoredFiles', 'VesselRequests'];
+const AUTO_TABS = ['TaskReviews', 'Attachments', 'StoredFiles', 'VesselRequests', 'Rotations', 'RotationChanges', 'RotationRules', 'Handovers', 'WorkSubmissions'];
 
 function sheet(name) {
   let sh = SpreadsheetApp.getActive().getSheetByName(name);
@@ -2385,7 +2417,8 @@ function createDemoVessel() {
     rec('bosun', 'captain', 4, 'Strong deck lead, great with the tender and toys.', -35);
     rec('stew', 'captain', 5, 'Guests ask for Sophie by name.', -30);
     rec('deckhand', 'captain', 4, 'Hard-working, learns fast, ready for more responsibility.', -15);
-    return ['Created ' + DEMO_VESSEL + '. Log in with any @meridianstar.test account, password ' + DEMO_PASSWORD + '.'];
+    addDemoRotations_();
+    return ['Created ' + DEMO_VESSEL + ' with rotations. Log in with any @meridianstar.test account, password ' + DEMO_PASSWORD + '.'];
   });
 }
 
@@ -2438,7 +2471,7 @@ function requestVessel(user, v) {
               status: 'pending', createdAt: nowIso(), handledBy: '', handledAt: '', vesselId: '', note: '' };
   insert('VesselRequests', r);
   audit(user.id, 'requestVessel', '', name, '');
-  const admins = readTable('Users').filter(u => isTrue(u.isAdmin) && isTrue(u.active)).map(u => u.email);
+  const admins = requestRecipients('');
   if (admins.length) {
     sendMail(admins.join(','), 'New yacht request: ' + name,
       '<p><b>' + esc(user.name) + '</b> (' + esc(user.email) + ') asked to add a yacht as <b>' + esc(REQUEST_ROLES[r.role]) + '</b>:</p>' +
@@ -2551,7 +2584,8 @@ function deleteUser(admin, userId, confirmEmail) {
     reviewsAbout: deleteRowsWhere('Reviews', r => r.userId === userId),
     workReviews: deleteRowsWhere('TaskReviews', r => r.userId === userId),
     accountRequests: deleteRowsWhere('Requests', r => r.email === email),
-    yachtRequests: deleteRowsWhere('VesselRequests', r => r.userId === userId)
+    yachtRequests: deleteRowsWhere('VesselRequests', r => r.userId === userId),
+    jobRequests: deleteRowsWhere('WorkSubmissions', r => r.userId === userId)
   };
   // Open tasks assigned to them go back to "Anyone"
   readTable('Tasks').filter(t => t.assignedTo === userId && t.state === 'Open').forEach(t => { t.assignedTo = ''; update('Tasks', t._row, t); });
@@ -2597,7 +2631,7 @@ function deleteVessel(admin, id, confirmName) {
     invitations: deleteRowsWhere('Memberships', m => m.vesselId === id && m.status === 'invited'),
     activity: deleteRowsWhere('Audit', a => a.vesselId === id)
   };
-  ['Materials', 'Onboard', 'PurchaseLists'].forEach(n => { if (SHEETS[n]) counts[n.toLowerCase()] = deleteRowsWhere(n, r => r.vesselId === id); });
+  ['Materials', 'Onboard', 'PurchaseLists', 'Rotations', 'RotationChanges', 'RotationRules', 'Handovers', 'WorkSubmissions'].forEach(n => { if (SHEETS[n]) counts[n.toLowerCase()] = deleteRowsWhere(n, r => r.vesselId === id && (n !== 'WorkSubmissions' || r.status === 'pending')); });
   // crew: their time aboard ends today
   let crew = 0;
   readTable('Memberships').filter(m => m.vesselId === id && m.status === 'active').forEach(m => {
@@ -2639,7 +2673,10 @@ function exportVessel(admin, id, withFiles) {
     audit: pick('Audit', a => a.vesselId === id || tid[a.taskId]),
     materials: pick('Materials', r => r.vesselId === id),
     onboard: pick('Onboard', r => r.vesselId === id),
-    purchaseLists: pick('PurchaseLists', r => r.vesselId === id)
+    purchaseLists: pick('PurchaseLists', r => r.vesselId === id),
+    rotations: pick('Rotations', r => r.vesselId === id && isTrue(r.active)),
+    rotationChanges: pick('RotationChanges', r => r.vesselId === id),
+    rotationRules: pick('RotationRules', r => r.vesselId === id)
   };
   let total = 0, skipped = 0;
   data.attachments.forEach(a => {
@@ -2663,6 +2700,8 @@ function exportVessel(admin, id, withFiles) {
   data.materials.forEach(r => want(r.createdBy));
   data.onboard.forEach(r => want(r.updatedBy));
   data.purchaseLists.forEach(r => { want(r.createdBy); want(r.receivedBy); });
+  data.rotations.forEach(r => { want(r.userId); want(r.reliefId); want(r.createdBy); });
+  data.rotationChanges.forEach(r => { want(r.userId); want(r.handledBy); });
   const people = readTable('Users').filter(u => ids[u.id]).map(u => ({ id: u.id, name: u.name, email: u.email, deleted: isDeletedUser(u) }));
   audit(admin.id, 'exportVessel', '', v.name, v.id);
   return { ok: true, filesSkipped: skipped,
@@ -2772,10 +2811,728 @@ function importVessel(admin, pkg) {
     list(k).forEach(r => insert(n, Object.assign({}, r, { id: fresh(n, r.id, 'MT'), vesselId: vid, taskId: r.taskId ? tmap[r.taskId] || '' : undefined,
       createdBy: U(r.createdBy), updatedBy: U(r.updatedBy), receivedBy: U(r.receivedBy) })));
   });
+  if (SHEETS.Rotations) {
+    deleteRowsWhere('Rotations', r => r.vesselId === vid);
+    deleteRowsWhere('RotationRules', r => r.vesselId === vid);
+    list('rotations').forEach(r => { if (U(r.userId)) insert('Rotations', Object.assign({}, r, { id: newId('RO'), vesselId: vid, userId: U(r.userId), reliefId: U(r.reliefId), createdBy: U(r.createdBy) || admin.id })); });
+    list('rotationChanges').forEach(r => { if (U(r.userId) && !(mode !== 'copy' && idsOf('RotationChanges')[r.id])) insert('RotationChanges', Object.assign({}, r, { id: fresh('RotationChanges', r.id, 'RC'), vesselId: vid, userId: U(r.userId), handledBy: U(r.handledBy) })); });
+    list('rotationRules').forEach(r => insert('RotationRules', { vesselId: vid, group: r.group, min: r.min }));
+  }
   audit(admin.id, 'importVessel', '', name + ' (' + mode + ')', vid);
   const what = { restore: 'restored', new: 'added', copy: 'added as a copy' }[mode];
   return { ok: true, mode, vessel: { id: vid, name }, counts, people: { linked, created },
            message: name + ' ' + what + ': ' + counts.tasks + ' tasks, ' + counts.signoffs + ' sign-offs, ' + counts.notes + ' notes, ' + counts.files + ' files, ' +
                     counts.crew + ' crew aboard.' + (created ? ' ' + created + ' new account(s) were created without passwords: use New setup link in the Crew tab.' : '') +
                     (counts.filesMissing ? ' ' + counts.filesMissing + ' file(s) were not in the download.' : '') };
+}
+
+
+// ───────────────────────── NEW REQUEST EMAILS ─────────────────────────
+/** CJM admins + CONFIG.REQUEST_NOTIFY, plus captains/owners of a named vessel (they can approve those requests). */
+function requestRecipients(vesselName) {
+  const users = readTable('Users').filter(u => isTrue(u.active));
+  const to = users.filter(u => isTrue(u.isAdmin)).map(u => u.email).concat(CONFIG.REQUEST_NOTIFY || []);
+  if (vesselName) {
+    const v = readTable('Vessels').find(x => isTrue(x.active) && !x.deletedAt && normVessel(x.name) === normVessel(vesselName));
+    if (v) readTable('Memberships').filter(m => m.vesselId === v.id && m.status === 'active' && permsOfMember(m).manageCrew)
+      .forEach(m => { const u = users.find(x => x.id === m.userId); if (u) to.push(u.email); });
+  }
+  const seen = {};
+  return to.map(e => String(e || '').toLowerCase().trim()).filter(e => e && !seen[e] && (seen[e] = 1));
+}
+
+function notifyNewRequest(r) {
+  const to = requestRecipients(r.vesselName);
+  if (!to.length) return false;
+  const link = siteUrl() ? siteUrl() + '/login' : '';
+  return sendMail(to.join(','), 'New ' + r.kind.toLowerCase() + ' account request: ' + r.name,
+    '<p><b>' + esc(r.name) + '</b> asked for a <b>' + esc(r.kind) + '</b> account on ' + esc(CONFIG.APP_NAME) + '.</p>' +
+    '<table style="border-collapse:collapse">' +
+    '<tr><td style="padding:2px 12px 2px 0;color:#666">Email</td><td>' + esc(r.email) + '</td></tr>' +
+    (r.position ? '<tr><td style="padding:2px 12px 2px 0;color:#666">Position</td><td>' + esc(r.position) + '</td></tr>' : '') +
+    (r.vesselName ? '<tr><td style="padding:2px 12px 2px 0;color:#666">Vessel</td><td>' + esc(r.vesselName) + '</td></tr>' : '') +
+    '</table>' + (r.message ? '<p>“' + esc(r.message) + '”</p>' : '') +
+    (link ? '<p><a href="' + link + '" style="display:inline-block;background:#12324a;color:#fff;padding:9px 16px;border-radius:6px;text-decoration:none">Review the request</a></p>' : '') +
+    '<p style="color:#666">CJM admins: CJM admin tab → Account requests. Captains and owners: Crew tab → Account requests.</p>');
+}
+
+// ═════════════════════════ ROTATION & HANDOVER (staging prototype) ═════════════════════════
+// Each crew member can have an on/off pattern (e.g. 70 days on, 70 off) from a start date, and a back-to-back
+// relief who covers the off time. Approved leave/extra days override the pattern. At every changeover the
+// outgoing crew member sends a handover that drafts itself from the maintenance log; the relief taps "Got it".
+const ROTATION_PRESETS = [
+  ['Permanent (no rotation)', 0, 0], ['2 months on / 2 off', 60, 60], ['10 weeks on / 10 off', 70, 70], ['3 months on / 1 off', 90, 30],
+  ['6 weeks on / 3 off', 42, 21], ['4 weeks on / 2 off', 28, 14], ['2 weeks on / 2 off', 14, 14]
+];
+const ROTATION_GROUP = { 'Ownership & Command': 'Bridge', 'Combined & Specialist': 'Specialist' };
+const ROTATION_MAX_DAYS = 120;
+const HANDOVER_DAYS = 3; // remind this many days before going off
+
+function rotationManager(c) { return c.perms.manageCrew; }
+function crewGroup(m) {
+  const t = TITLES[titleOf(m.position)];
+  const g = t ? t.group : 'Deck';
+  return ROTATION_GROUP[g] || g;
+}
+/** Crew who rotate: active members except owners/managers ashore, contractors and view-only. */
+function rotationCrew(vesselId) {
+  const users = {}; readTable('Users').forEach(u => users[u.id] = u);
+  return readTable('Memberships').filter(m => m.vesselId === vesselId && m.status === 'active' && users[m.userId] && isTrue(users[m.userId].active))
+    .filter(m => ['oversight', 'contractor', 'viewonly'].indexOf(roleOf(m).access) === -1)
+    .map(m => ({ userId: m.userId, name: users[m.userId].name, title: titleOf(m.position), group: crewGroup(m), joinedAt: (m.joinedAt || '').slice(0, 10) }));
+}
+function rotationsFor(vesselId) {
+  const map = {};
+  readTable('Rotations').filter(r => r.vesselId === vesselId && isTrue(r.active)).forEach(r => map[r.userId] = r);
+  return map;
+}
+function changesFor(vesselId) { return readTable('RotationChanges').filter(x => x.vesselId === vesselId); }
+
+/** true = aboard on that date. No rotation = aboard (permanent crew). Approved leave/extra days win. */
+function aboardOn(rot, changes, userId, date) {
+  for (let i = 0; i < changes.length; i++) {
+    const x = changes[i];
+    if (x.userId === userId && x.status === 'approved' && date >= x.fromDate && date <= x.toDate) return x.type === 'extra';
+  }
+  if (!rot || !(Number(rot.onDays) > 0)) return true;
+  const on = Number(rot.onDays), L = on + Number(rot.offDays || 0);
+  if (!L) return true;
+  const d = daysBetween(rot.startDate, date);
+  return ((d % L) + L) % L < on;
+}
+
+/** Next date (after `from`) where this person's aboard/off status flips, within a year. */
+function nextChange(rot, changes, userId, from) {
+  const now = aboardOn(rot, changes, userId, from);
+  let d = from;
+  for (let i = 1; i <= 366; i++) {
+    d = addInterval(from, i, 'days');
+    if (aboardOn(rot, changes, userId, d) !== now) return { date: d, aboard: !now };
+  }
+  return null;
+}
+
+/** Days actually aboard between two dates (for sea time). */
+function aboardDaysBetween(vesselId, userId, from, to) {
+  const rot = rotationsFor(vesselId)[userId];
+  const changes = changesFor(vesselId).filter(x => x.userId === userId);
+  if (!rot && !changes.length) return null; // no rotation: whole membership counts
+  let n = 0, d = from, guard = 0;
+  while (d <= to && guard++ < 4000) { if (aboardOn(rot, changes, userId, d)) n++; d = addInterval(d, 1, 'days'); }
+  return n;
+}
+
+function rotationView(c, user, req) {
+  if (c.perms.contractor) throw new Error('Contractors do not have a rotation');
+  const from = req.from && /^\d{4}-\d{2}-\d{2}$/.test(req.from) ? req.from : today();
+  const days = Math.max(7, Math.min(ROTATION_MAX_DAYS, Number(req.days) || 56));
+  const to = addInterval(from, days - 1, 'days');
+  const crew = rotationCrew(c.vessel.id);
+  const rots = rotationsFor(c.vessel.id);
+  const changes = changesFor(c.vessel.id);
+  const approved = changes.filter(x => x.status === 'approved');
+  const names = crewNames();
+  const dates = []; for (let i = 0; i < days; i++) dates.push(addInterval(from, i, 'days'));
+  const rules = {}; readTable('RotationRules').filter(r => r.vesselId === c.vessel.id).forEach(r => rules[r.group] = Number(r.min) || 0);
+  const rows = crew.map(p => {
+    const rot = rots[p.userId];
+    const cells = dates.map(d => {
+      if (p.joinedAt && d < p.joinedAt) return 'n';
+      const leave = approved.find(x => x.userId === p.userId && d >= x.fromDate && d <= x.toDate);
+      if (leave) return leave.type === 'extra' ? 'x' : 'l';
+      return aboardOn(rot, [], p.userId, d) ? 'a' : 'o';
+    }).join('');
+    const nc = nextChange(rot, approved, p.userId, today());
+    return Object.assign({}, p, { cells, aboardToday: aboardOn(rot, approved, p.userId, today()),
+      rotation: rot ? { onDays: Number(rot.onDays), offDays: Number(rot.offDays), startDate: rot.startDate, reliefId: rot.reliefId, reliefName: names[rot.reliefId] || '' } : null,
+      next: nc });
+  });
+  // daily aboard counts and minimum-crew warnings
+  const groups = {}; crew.forEach(p => groups[p.group] = 1);
+  const totals = dates.map((d, i) => {
+    const by = {}; rows.forEach(r => { const s = r.cells.charAt(i); if (s === 'a' || s === 'x') by[r.group] = (by[r.group] || 0) + 1; });
+    const total = Object.keys(by).reduce((s, k) => s + by[k], 0);
+    const short = Object.keys(rules).filter(g => rules[g] > 0 && g !== '_total' && (by[g] || 0) < rules[g]);
+    if (rules._total && total < rules._total) short.push('Total');
+    return { date: d, total, by, short };
+  });
+  const me = rows.find(r => r.userId === user.id) || null;
+  const myHandovers = handoversVisible(c, user);
+  let handoverDue = null;
+  if (me && me.next && !me.next.aboard && daysBetween(today(), me.next.date) <= HANDOVER_DAYS) {
+    const sent = myHandovers.some(h => h.fromUserId === user.id && h.status !== 'draft' && h.createdAt.slice(0, 10) >= addInterval(today(), -HANDOVER_DAYS - 2, 'days'));
+    if (!sent) handoverDue = { offFrom: me.next.date, reliefId: (rots[user.id] || {}).reliefId || '', reliefName: names[(rots[user.id] || {}).reliefId] || '' };
+  }
+  return { ok: true, from, to, dates, rows, totals, rules, groups: Object.keys(groups), presets: ROTATION_PRESETS,
+           canManage: rotationManager(c), me: me ? { userId: me.userId, aboardToday: me.aboardToday, next: me.next, rotation: me.rotation } : null,
+           handoverDue,
+           requests: changes.filter(x => rotationManager(c) || x.userId === user.id).sort((a, b) => a.requestedAt < b.requestedAt ? 1 : -1).slice(0, 40)
+             .map(x => ({ id: x.id, userId: x.userId, name: names[x.userId] || '', type: x.type, fromDate: x.fromDate, toDate: x.toDate, note: x.note,
+                          status: x.status, requestedAt: x.requestedAt, handledBy: names[x.handledBy] || '' })),
+           handovers: myHandovers.slice(0, 20) };
+}
+
+function saveRotation(c, user, r) {
+  if (!rotationManager(c)) throw new Error('Only the Captain can set rotations');
+  const crew = rotationCrew(c.vessel.id);
+  const who = crew.find(p => p.userId === r.userId);
+  if (!who) throw new Error('That person is not rotating crew on this vessel');
+  const on = Math.round(Number(r.onDays) || 0), off = Math.round(Number(r.offDays) || 0);
+  const all = readTable('Rotations').filter(x => x.vesselId === c.vessel.id && isTrue(x.active));
+  const retire = (uid) => all.filter(x => x.userId === uid).forEach(x => { x.active = 'FALSE'; x.updatedAt = nowIso(); update('Rotations', x._row, x); });
+  if (!on) { // permanent
+    retire(r.userId);
+    audit(user.id, 'rotation', '', who.name + ': permanent (no rotation)', c.vessel.id);
+    return { ok: true };
+  }
+  if (on < 1 || on > 365 || off < 1 || off > 365) throw new Error('Days on and off must be 1 to 365');
+  validateDate(r.startDate);
+  const relief = r.reliefId ? crew.find(p => p.userId === r.reliefId) : null;
+  if (r.reliefId && (!relief || r.reliefId === r.userId)) throw new Error('Choose a relief from the rotating crew');
+  retire(r.userId);
+  insert('Rotations', { id: newId('RO'), vesselId: c.vessel.id, userId: r.userId, onDays: String(on), offDays: String(off), startDate: r.startDate,
+                        reliefId: relief ? relief.userId : '', active: 'TRUE', createdBy: user.id, createdAt: nowIso(), updatedAt: nowIso() });
+  if (relief) { // back-to-back: the relief works the opposite half of the same cycle
+    retire(relief.userId);
+    insert('Rotations', { id: newId('RO'), vesselId: c.vessel.id, userId: relief.userId, onDays: String(off), offDays: String(on),
+                          startDate: addInterval(r.startDate, on, 'days'), reliefId: r.userId, active: 'TRUE', createdBy: user.id, createdAt: nowIso(), updatedAt: nowIso() });
+  }
+  audit(user.id, 'rotation', '', who.name + ': ' + on + ' on / ' + off + ' off from ' + r.startDate + (relief ? ', back-to-back with ' + relief.name : ''), c.vessel.id);
+  return { ok: true };
+}
+
+function setManning(c, user, rules) {
+  if (!rotationManager(c)) throw new Error('Only the Captain can set minimum crew');
+  deleteRowsWhere('RotationRules', r => r.vesselId === c.vessel.id);
+  Object.keys(rules || {}).forEach(g => {
+    const n = Math.round(Number(rules[g]) || 0);
+    if (n > 0 && n <= 100) insert('RotationRules', { vesselId: c.vessel.id, group: clip(g, 40), min: String(n) });
+  });
+  audit(user.id, 'manning', '', JSON.stringify(rules).slice(0, 150), c.vessel.id);
+  return { ok: true };
+}
+
+function requestRotationChange(c, user, x) {
+  if (c.perms.contractor) throw new Error('Contractors do not have a rotation');
+  const type = ['leave', 'extra'].indexOf(x.type) !== -1 ? x.type : 'leave';
+  validateDate(x.fromDate); validateDate(x.toDate);
+  if (x.toDate < x.fromDate) throw new Error('The last day is before the first day');
+  if (daysBetween(x.fromDate, x.toDate) > 180) throw new Error('Keep a request to 180 days or less');
+  const forUser = x.userId && rotationManager(c) ? x.userId : user.id;
+  if (!rotationCrew(c.vessel.id).some(p => p.userId === forUser)) throw new Error('Not rotating crew on this vessel');
+  const auto = rotationManager(c); // the Captain's own entries are approved straight away
+  const row = { id: newId('RC'), vesselId: c.vessel.id, userId: forUser, type, fromDate: x.fromDate, toDate: x.toDate, note: clip(x.note, 300),
+                status: auto ? 'approved' : 'pending', requestedAt: nowIso(), handledBy: auto ? user.id : '', handledAt: auto ? nowIso() : '' };
+  insert('RotationChanges', row);
+  audit(user.id, 'rotationRequest', '', type + ' ' + x.fromDate + ' to ' + x.toDate + ' (' + row.status + ')', c.vessel.id);
+  if (!auto) {
+    const to = readTable('Memberships').filter(m => m.vesselId === c.vessel.id && m.status === 'active' && permsOfMember(m).manageCrew)
+      .map(m => (readTable('Users').find(u => u.id === m.userId) || {}).email).filter(Boolean);
+    if (to.length) sendMail(to.join(','), c.vessel.name + ': ' + (type === 'leave' ? 'leave' : 'extra days') + ' request from ' + user.name,
+      '<p><b>' + esc(user.name) + '</b> asked for ' + (type === 'leave' ? 'leave' : 'extra days aboard') + ' from <b>' + x.fromDate + '</b> to <b>' + x.toDate + '</b>.</p>' +
+      (row.note ? '<p>“' + esc(row.note) + '”</p>' : '') + '<p>Approve or decline it in the Rotation tab.</p>' + appLink());
+  }
+  return { ok: true, status: row.status };
+}
+
+function decideRotationChange(c, user, id, approve) {
+  if (!rotationManager(c)) throw new Error('Only the Captain can approve rotation requests');
+  const x = readTable('RotationChanges').find(r => r.id === id && r.vesselId === c.vessel.id);
+  if (!x) throw new Error('Request not found');
+  if (x.status !== 'pending') throw new Error('Already ' + x.status);
+  x.status = approve ? 'approved' : 'declined'; x.handledBy = user.id; x.handledAt = nowIso();
+  update('RotationChanges', x._row, x);
+  const u = readTable('Users').find(v => v.id === x.userId);
+  if (u) sendMail(u.email, c.vessel.name + ': your ' + (x.type === 'leave' ? 'leave' : 'extra days') + ' request was ' + x.status,
+    '<p>' + esc(x.fromDate) + ' to ' + esc(x.toDate) + ': <b>' + x.status + '</b> by ' + esc(user.name) + '.</p>' + appLink());
+  audit(user.id, 'rotationDecision', '', x.type + ' ' + x.fromDate + ' ' + x.status, c.vessel.id);
+  return { ok: true };
+}
+
+// ───────────── Handover ─────────────
+function handoverView(h, names) {
+  let auto = {}; try { auto = JSON.parse(h.autoSummary || '{}'); } catch (e) {}
+  const files = readTable('Attachments').filter(a => a.taskId === 'HO:' + h.id).map(attachmentView);
+  return { id: h.id, fromUserId: h.fromUserId, fromName: names[h.fromUserId] || '', toUserId: h.toUserId, toName: names[h.toUserId] || '',
+           changeDate: h.changeDate, auto, note: h.note, status: h.status, createdAt: h.createdAt, sentAt: h.sentAt, acceptedAt: h.acceptedAt,
+           acceptedBy: names[h.acceptedBy] || '', files };
+}
+function handoversVisible(c, user) {
+  const names = crewNames();
+  return readTable('Handovers').filter(h => h.vesselId === c.vessel.id &&
+      (rotationManager(c) && h.status !== 'draft' || h.fromUserId === user.id || (h.toUserId === user.id && h.status !== 'draft')))
+    .sort((a, b) => a.createdAt < b.createdAt ? 1 : -1).map(h => handoverView(h, names));
+}
+
+/** Drafts the handover from what is already logged: open and overdue jobs, what is due soon, what this person signed off and noted. */
+function draftSummary(c, user, since) {
+  const tasks = vesselTasks(c).filter(t => t.state === 'Open');
+  const mine = (t) => t.assignedTo === user.id || inMyDept(c, t);
+  const pick = (t) => ({ id: t.id, title: t.title, system: t.system, dueDate: t.dueDate, color: colorFor(t), type: t.type });
+  const soon = addInterval(today(), 21, 'days');
+  const titles = {}; vesselTasks(c).forEach(t => titles[t.id] = t.title);
+  return {
+    since,
+    overdue: tasks.filter(t => mine(t) && t.type !== 'Issue' && colorFor(t) === 'red').map(pick),
+    issues: tasks.filter(t => mine(t) && t.type === 'Issue').map(pick),
+    dueSoon: tasks.filter(t => mine(t) && t.type !== 'Issue' && t.dueDate && t.dueDate <= soon && colorFor(t) !== 'red')
+      .sort((a, b) => a.dueDate < b.dueDate ? -1 : 1).slice(0, 15).map(pick),
+    done: readTable('Completions').filter(x => x.performedBy === user.id && titles[x.taskId] !== undefined && x.performedDate >= since)
+      .sort((a, b) => a.performedDate < b.performedDate ? 1 : -1).slice(0, 25).map(x => ({ taskId: x.taskId, title: titles[x.taskId], date: x.performedDate, notes: x.notes })),
+    notes: readTable('Notes').filter(n => n.userId === user.id && titles[n.taskId] !== undefined && n.createdAt.slice(0, 10) >= since)
+      .sort((a, b) => a.createdAt < b.createdAt ? 1 : -1).slice(0, 10).map(n => ({ taskId: n.taskId, title: titles[n.taskId], text: n.text, date: n.createdAt.slice(0, 10) }))
+  };
+}
+
+function startHandover(c, user, req) {
+  if (c.perms.contractor || c.perms.viewOnly) throw new Error('Contractors and view-only crew do not hand over');
+  const rot = rotationsFor(c.vessel.id)[user.id];
+  const crew = rotationCrew(c.vessel.id);
+  const toUserId = req.toUserId || (rot && rot.reliefId) || '';
+  if (toUserId && !crew.some(p => p.userId === toUserId)) throw new Error('Choose who you are handing over to');
+  // reuse an open draft
+  const draft = readTable('Handovers').find(h => h.vesselId === c.vessel.id && h.fromUserId === user.id && h.status === 'draft');
+  const approved = changesFor(c.vessel.id).filter(x => x.status === 'approved');
+  const nc = nextChange(rot, approved, user.id, today());
+  // since: start of the current time aboard (or 30 days)
+  let since = addInterval(today(), -30, 'days');
+  if (rot && Number(rot.onDays) > 0) { let d = today(), g = 0; while (aboardOn(rot, approved, user.id, addInterval(d, -1, 'days')) && g++ < 365) d = addInterval(d, -1, 'days'); since = d; }
+  const summary = JSON.stringify(draftSummary(c, user, since));
+  const changeDate = nc && !nc.aboard ? nc.date : today();
+  if (draft) {
+    draft.autoSummary = summary; draft.toUserId = toUserId || draft.toUserId; draft.changeDate = changeDate;
+    update('Handovers', draft._row, draft);
+    return { ok: true, handover: handoverView(draft, crewNames()) };
+  }
+  const h = { id: newId('HO'), vesselId: c.vessel.id, fromUserId: user.id, toUserId, changeDate, autoSummary: summary, note: '', status: 'draft',
+              createdAt: nowIso(), sentAt: '', acceptedAt: '', acceptedBy: '' };
+  insert('Handovers', h);
+  return { ok: true, handover: handoverView(h, crewNames()) };
+}
+
+function handoverRow(c, id) {
+  const h = readTable('Handovers').find(x => x.id === id && x.vesselId === c.vessel.id);
+  if (!h) throw new Error('Handover not found');
+  return h;
+}
+
+function sendHandover(c, user, req) {
+  const h = handoverRow(c, req.id);
+  if (h.fromUserId !== user.id) throw new Error('Only the person handing over can send it');
+  if (h.status !== 'draft') throw new Error('Already sent');
+  const crew = rotationCrew(c.vessel.id);
+  if (req.toUserId) { if (!crew.some(p => p.userId === req.toUserId)) throw new Error('Choose who you are handing over to'); h.toUserId = req.toUserId; }
+  if (!h.toUserId) throw new Error('Choose who you are handing over to');
+  if (h.toUserId === user.id) throw new Error('Choose someone else to hand over to');
+  const files = Array.isArray(req.files) ? req.files : [];
+  if (files.length > ATTACH_MAX_FILES) throw new Error('Attach up to ' + ATTACH_MAX_FILES + ' files');
+  files.forEach(checkAttachment);
+  h.note = clip(req.note, 3000);
+  files.forEach(f => saveAttachment(c, user, 'HO:' + h.id, '', f));
+  h.status = 'sent'; h.sentAt = nowIso();
+  update('Handovers', h._row, h);
+  const names = crewNames();
+  const users = {}; readTable('Users').forEach(u => users[u.id] = u);
+  const to = [users[h.toUserId] && users[h.toUserId].email].concat(
+    readTable('Memberships').filter(m => m.vesselId === c.vessel.id && m.status === 'active' && permsOfMember(m).manageCrew && m.userId !== user.id)
+      .map(m => users[m.userId] && users[m.userId].email)).filter(Boolean);
+  const s = JSON.parse(h.autoSummary || '{}');
+  sendMail(to.join(','), c.vessel.name + ': handover from ' + user.name,
+    '<p><b>' + esc(user.name) + '</b> handed over to <b>' + esc(names[h.toUserId] || '') + '</b>.</p>' +
+    (h.note ? '<p>“' + esc(h.note) + '”</p>' : '') +
+    '<p>' + (s.overdue || []).length + ' overdue, ' + (s.issues || []).length + ' open issues, ' + (s.dueSoon || []).length + ' due in the next 3 weeks, ' +
+    (s.done || []).length + ' jobs signed off this rotation.</p><p>Open the Rotation tab to read it and tap “Got it”.</p>' + appLink());
+  audit(user.id, 'handover', '', 'Handover to ' + (names[h.toUserId] || ''), c.vessel.id);
+  return { ok: true, handover: handoverView(h, names) };
+}
+
+function acceptHandover(c, user, id) {
+  const h = handoverRow(c, id);
+  if (h.status !== 'sent') throw new Error(h.status === 'accepted' ? 'Already accepted' : 'Not sent yet');
+  if (h.toUserId !== user.id && !rotationManager(c)) throw new Error('Only the person taking over can accept it');
+  h.status = 'accepted'; h.acceptedAt = nowIso(); h.acceptedBy = user.id;
+  update('Handovers', h._row, h);
+  audit(user.id, 'handoverAccepted', '', 'From ' + (crewNames()[h.fromUserId] || ''), c.vessel.id);
+  return { ok: true, handover: handoverView(h, crewNames()) };
+}
+
+
+/** Sea time for one membership: days actually aboard when the vessel uses rotations, else the whole span. */
+function seaDays(m) {
+  if (!m.joinedAt || permsOfMember(m).contractor) return 0;
+  const from = m.joinedAt.slice(0, 10), to = m.status === 'left' && m.leftAt ? m.leftAt.slice(0, 10) : today();
+  const rot = aboardDaysBetween(m.vesselId, m.userId, from, to);
+  return rot === null ? Math.max(0, daysBetween(from, to)) : rot;
+}
+
+/**
+ * Demo yacht: run once from the Apps Script editor (choose "addDemoRotations", then Run) to add rotation examples
+ * to M/Y Meridian Star: the Bosun and Deckhand work 6 weeks on / 6 off back-to-back (the Bosun goes off in 2 days,
+ * so his Rotation tab asks for a handover), the Chief Stewardess 6 weeks on / 3 off, minimum crew for Engineering and Deck,
+ * and one leave request waiting for the Captain. Safe to run again.
+ */
+function addDemoRotations() { return withLock(addDemoRotations_); }
+function addDemoRotations_() {
+  {
+    const v = readTable('Vessels').find(x => x.name === DEMO_VESSEL && isTrue(x.active) && !x.deletedAt);
+    if (!v) throw new Error(DEMO_VESSEL + ' not found. Run createDemoVessel first.');
+    const id = (email) => (readTable('Users').find(u => u.email === email) || {}).id;
+    const bosun = id('jake.turner@meridianstar.test'), deck = id('liam.oneill@meridianstar.test'), stew = id('sophie.laurent@meridianstar.test'), cap = id('ryan.calder@meridianstar.test');
+    if (!bosun || !deck || !stew || !cap) throw new Error('Demo crew not found');
+    deleteRowsWhere('Rotations', r => r.vesselId === v.id);
+    deleteRowsWhere('RotationChanges', r => r.vesselId === v.id);
+    deleteRowsWhere('RotationRules', r => r.vesselId === v.id);
+    const D = (n) => addInterval(today(), n, 'days'), now = nowIso();
+    const rot = (u, on, off, start, relief) => insert('Rotations', { id: newId('RO'), vesselId: v.id, userId: u, onDays: String(on), offDays: String(off),
+      startDate: D(start), reliefId: relief || '', active: 'TRUE', createdBy: cap, createdAt: now, updatedAt: now });
+    rot(bosun, 42, 42, -40, deck);
+    rot(deck, 42, 42, 2, bosun);
+    rot(stew, 42, 21, -20, '');
+    insert('RotationRules', { vesselId: v.id, group: 'Engineering', min: '1' });
+    insert('RotationRules', { vesselId: v.id, group: 'Deck', min: '1' });
+    addDemoWorkRequests_(v, deck, stew);
+    insert('RotationChanges', { id: newId('RC'), vesselId: v.id, userId: stew, type: 'leave', fromDate: D(9), toDate: D(12),
+      note: 'Sister’s wedding in Antibes', status: 'pending', requestedAt: now, handledBy: '', handledAt: '' });
+    return ['Rotation examples added to ' + DEMO_VESSEL + '. Log in as jake.turner@meridianstar.test to see the handover prompt.'];
+  }
+}
+
+// ═════════════════════════ CREW SUGGESTIONS, UNLISTED WORK, JOBS ON OTHER BOATS ═════════════════════════
+// Three ways crew and contractors send work to a Captain or Owner. Nothing enters a vessel's log until they approve it.
+//  - suggest:  crew propose a task; on approval it joins the task list (optionally recurring).
+//  - done:     crew did work that was not in the system; on approval it is logged as performed, optionally scored 1–10.
+//  - external: crew or contractors log a job on any boat and name its Captain or Owner by email.
+//              If that person runs the boat on CJM Marine, it waits in their Reviews tab like "done".
+//              If not, they get an email link to confirm and score it without an account, plus an optional invitation to join.
+const WORK_KINDS = { suggest: 'Suggested task', done: 'Work done', external: 'Job on another boat' };
+const WORK_PENDING_MAX = 30;      // waiting requests per person
+const WORK_EXTERNAL_PER_DAY = 10; // emails to Captains outside CJM Marine, per person per day
+const WORK_LINK_DAYS = 60;        // how long the emailed review link works
+const WORK_ROLES = ['Captain', 'Owner', 'Yacht manager', 'Chief Officer', 'Chief Engineer'];
+
+function emailOk(e) { return /^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$/.test(e); }
+
+/** The vessel a Captain/Owner email runs on CJM Marine (matched by boat name, or their only boat). */
+function vesselForReviewer(email, boatName) {
+  const u = readTable('Users').find(x => x.email === email && isTrue(x.active) && !isDeletedUser(x));
+  if (!u) return null;
+  const vs = readTable('Vessels').filter(v => isTrue(v.active) && !v.deletedAt);
+  const theirs = readTable('Memberships').filter(m => m.userId === u.id && m.status === 'active' && permsOfMember(m).hires)
+    .map(m => vs.find(v => v.id === m.vesselId)).filter(Boolean);
+  return theirs.find(v => normVessel(v.name) === normVessel(boatName)) || (theirs.length === 1 ? theirs[0] : null);
+}
+
+function joinUrl(boatName) {
+  return siteUrl() + '/login?request=1&as=captain&vessel=' + encodeURIComponent(boatName || '');
+}
+
+function submitWork(user, w) {
+  const kind = WORK_KINDS[w.kind] ? w.kind : '';
+  if (!kind) throw new Error('Choose what you are sending');
+  const title = clip(w.title, 200);
+  if (!title) throw new Error('Say what the job is');
+  const mine = readTable('WorkSubmissions').filter(x => x.userId === user.id);
+  if (mine.filter(x => x.status === 'pending').length >= WORK_PENDING_MAX) {
+    throw new Error('You have ' + WORK_PENDING_MAX + ' requests waiting for an answer. Cancel some or wait for answers first.');
+  }
+  const files = Array.isArray(w.files) ? w.files : [];
+  if (files.length > ATTACH_MAX_FILES) throw new Error('Attach up to ' + ATTACH_MAX_FILES + ' files');
+  files.forEach(checkAttachment);
+
+  let performedDate = '';
+  if (kind !== 'suggest') {
+    performedDate = w.performedDate || today();
+    validateDate(performedDate);
+    if (performedDate > today()) throw new Error('The date the job was done cannot be in the future');
+    if (performedDate < addInterval(today(), -365, 'days')) throw new Error('Jobs older than a year cannot be sent for review');
+  }
+
+  let vessel = null, boatName = '', contactEmail = '', contactName = '';
+  if (kind === 'external') {
+    boatName = clip(w.boatName, 80);
+    if (!boatName) throw new Error('Name the boat');
+    contactEmail = String(w.contactEmail || '').trim().toLowerCase();
+    if (!emailOk(contactEmail)) throw new Error('Enter the Captain or Owner\'s email address');
+    if (contactEmail === user.email) throw new Error('Enter the Captain or Owner\'s email, not your own');
+    contactName = clip(w.contactName, 80);
+    const day = today();
+    if (mine.filter(x => x.kind === 'external' && String(x.createdAt).slice(0, 10) === day).length >= WORK_EXTERNAL_PER_DAY) {
+      throw new Error('You can send up to ' + WORK_EXTERNAL_PER_DAY + ' jobs on other boats a day');
+    }
+    vessel = vesselForReviewer(contactEmail, boatName);
+  } else {
+    const c = vesselCtx(user, w.vesselId);
+    if (!c.membership) throw new Error('Only crew of this vessel can send this');
+    if (c.perms.viewOnly) throw new Error('View-only access cannot log work or suggest tasks');
+    vessel = c.vessel; boatName = vessel.name;
+  }
+  const reviewers = vessel ? vesselReviewers(vessel.id, user.id) : [];
+  if (kind !== 'external' && !reviewers.length) throw new Error('This vessel has no Captain or Owner on CJM Marine to approve it');
+  if (!reviewers.length) vessel = null;
+
+  const recurring = kind === 'suggest' && !!w.recurring;
+  if (recurring) validateInterval(w.intervalValue, w.intervalUnit);
+  if (kind === 'suggest' && w.dueDate) validateDate(w.dueDate);
+
+  const sub = {
+    id: newId('J'), kind, vesselId: vessel ? vessel.id : '', boatName, userId: user.id, title,
+    system: clip(w.system, 60), description: clip(w.description, 3000), performedDate,
+    dueDate: kind === 'suggest' ? (w.dueDate || '') : '', recurring: recurring ? 'TRUE' : 'FALSE',
+    intervalValue: recurring ? String(w.intervalValue) : '', intervalUnit: recurring ? String(w.intervalUnit) : '',
+    wantScore: kind !== 'suggest' && w.wantScore !== false ? 'TRUE' : 'FALSE',
+    contactEmail, contactName, token: '', tokenExpires: '', status: 'pending',
+    decidedBy: '', decidedLabel: '', decidedAt: '', decisionNote: '', score: '', reviewText: '', taskId: '', completionId: '',
+    createdAt: nowIso()
+  };
+  if (kind === 'external' && !vessel) {
+    sub.token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+    sub.tokenExpires = addInterval(today(), WORK_LINK_DAYS, 'days');
+  }
+  insert('WorkSubmissions', sub);
+  const fileCtx = { vessel: vessel || { id: '', name: 'Jobs on other boats' } };
+  files.forEach(f => saveAttachment(fileCtx, user, 'WS:' + sub.id, '', f));
+  audit(user.id, 'submitWork', '', WORK_KINDS[kind] + ': ' + title + (vessel ? '' : ' (' + boatName + ', ' + contactEmail + ')'), sub.vesselId);
+
+  const details = '<p><b>' + esc(title) + '</b>' + (sub.system ? ' (' + esc(sub.system) + ')' : '') +
+    (performedDate ? '<br>Done ' + performedDate : '') + (sub.description ? '<br><i>' + esc(sub.description) + '</i>' : '') +
+    (files.length ? '<br>' + files.length + ' photo' + (files.length > 1 ? 's or files' : ' or file') + ' attached' : '') + '</p>';
+  let message;
+  if (vessel) {
+    const what = kind === 'suggest' ? 'suggested a task' : kind === 'done' ? 'logged work that is not in the task list' : 'logged a job on ' + esc(vessel.name);
+    sendMail(reviewers.map(r => r.email).join(','), (kind === 'suggest' ? 'Task suggested: ' : 'Approve work: ') + user.name + ', ' + title,
+      '<p><b>' + esc(user.name) + '</b> ' + what + ' and asks for your approval (' + esc(vessel.name) + ').</p>' + details +
+      '<p>Nothing is added to the vessel\'s log until you approve it. Open the <b>Reviews</b> tab.</p>' + appLink());
+    message = 'Sent to the Captain or Owner of ' + vessel.name + ' for approval.';
+  } else {
+    const link = siteUrl() + '/?w=' + sub.token;
+    sendMail(contactEmail, user.name + ' asks you to confirm a job on ' + boatName,
+      '<p>' + (contactName ? 'Hello ' + esc(contactName) + ',</p><p>' : '') + '<b>' + esc(user.name) + '</b> logged this job on <b>' + esc(boatName) +
+      '</b> and named you as its Captain or Owner:</p>' + details +
+      '<p><a href="' + link + '" style="display:inline-block;background:#12324a;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none">Review the job</a></p>' +
+      '<p>No account is needed. You can confirm it, give it a score from 1 to 10, or decline it. Your answer becomes part of their work record. ' +
+      'The link works for ' + WORK_LINK_DAYS + ' days.</p>' +
+      '<p style="color:#5b6b78">CJM Marine keeps yacht maintenance logs, crew and rotations in one place. If you would like ' + esc(boatName) +
+      ' on it, you can <a href="' + joinUrl(boatName) + '">request it here</a>. This is optional.</p>');
+    message = 'Emailed to ' + contactEmail + ' for review. ' + boatName + ' is not on CJM Marine, so they can answer from the email without an account.';
+  }
+  return { ok: true, message, submissions: mySubmissions(user) };
+}
+
+function workFiles(subId) {
+  return readTable('Attachments').filter(a => a.taskId === 'WS:' + subId).map(attachmentView);
+}
+
+function mySubmissions(user) {
+  const vs = {}; readTable('Vessels').forEach(v => vs[v.id] = v.name);
+  const names = crewNames();
+  const files = {};
+  readTable('Attachments').forEach(a => { if (String(a.taskId).indexOf('WS:') === 0) (files[a.taskId.slice(3)] = files[a.taskId.slice(3)] || []).push(attachmentView(a)); });
+  return readTable('WorkSubmissions').filter(x => x.userId === user.id && x.status !== 'cancelled')
+    .sort((a, b) => a.createdAt < b.createdAt ? 1 : -1).slice(0, 60)
+    .map(x => ({ id: x.id, kind: x.kind, kindLabel: WORK_KINDS[x.kind], title: x.title, system: x.system, description: x.description,
+                 performedDate: x.performedDate, boatName: vs[x.vesselId] || x.boatName, onPlatform: !!x.vesselId,
+                 contactEmail: x.vesselId ? '' : x.contactEmail,
+                 status: x.status === 'pending' && x.tokenExpires && x.tokenExpires < today() ? 'expired' : x.status,
+                 decidedBy: names[x.decidedBy] || x.decidedLabel || '', decidedAt: x.decidedAt, decisionNote: x.decisionNote,
+                 score: x.score ? Number(x.score) : null, reviewText: x.reviewText, createdAt: x.createdAt,
+                 attachments: files[x.id] || [] }));
+}
+
+function cancelWork(user, id) {
+  const x = readTable('WorkSubmissions').find(r => r.id === id && r.userId === user.id);
+  if (!x) throw new Error('Request not found');
+  if (x.status !== 'pending') throw new Error('This request was already answered');
+  x.status = 'cancelled'; x.token = '';
+  update('WorkSubmissions', x._row, x);
+  audit(user.id, 'cancelWork', '', x.title, x.vesselId);
+  return { ok: true, submissions: mySubmissions(user) };
+}
+
+function pendingWorkFor(vesselId, reviewerId) {
+  return readTable('WorkSubmissions').filter(x => x.vesselId === vesselId && x.status === 'pending' && x.userId !== reviewerId);
+}
+
+function approvalsFor(c, user) {
+  const names = crewNames();
+  const ms = readTable('Memberships').filter(m => m.vesselId === c.vessel.id && m.status === 'active');
+  const view = (x) => {
+    const m = ms.find(k => k.userId === x.userId);
+    return { id: x.id, kind: x.kind, kindLabel: WORK_KINDS[x.kind], crewId: x.userId, crewName: names[x.userId] || '',
+             crewTitle: m ? titleOf(m.position) : 'Not on your crew', onCrew: !!m,
+             title: x.title, system: x.system, description: x.description, performedDate: x.performedDate,
+             dueDate: x.dueDate, recurring: isTrue(x.recurring), intervalValue: x.intervalValue, intervalUnit: x.intervalUnit,
+             wantScore: isTrue(x.wantScore), boatName: x.boatName, createdAt: x.createdAt, status: x.status,
+             decidedBy: names[x.decidedBy] || '', decidedAt: x.decidedAt, decisionNote: x.decisionNote,
+             score: x.score ? Number(x.score) : null, taskId: x.taskId, attachments: workFiles(x.id) };
+  };
+  const all = readTable('WorkSubmissions').filter(x => x.vesselId === c.vessel.id && x.userId !== user.id && x.status !== 'cancelled');
+  return {
+    pending: all.filter(x => x.status === 'pending').sort((a, b) => a.createdAt < b.createdAt ? -1 : 1).map(view),
+    done: all.filter(x => x.status !== 'pending').sort((a, b) => a.decidedAt < b.decidedAt ? 1 : -1).slice(0, 20).map(view)
+  };
+}
+
+function decideWork(c, user, id, d) {
+  requireReviewer(c, user);
+  const x = readTable('WorkSubmissions').find(r => r.id === id && r.vesselId === c.vessel.id);
+  if (!x) throw new Error('Request not found');
+  if (x.status !== 'pending') throw new Error('This request was already ' + (x.status === 'cancelled' ? 'withdrawn' : 'answered'));
+  if (x.userId === user.id) throw new Error('You cannot approve your own request');
+  const crew = readTable('Users').find(u => u.id === x.userId);
+  const now = nowIso();
+  x.decidedBy = user.id; x.decidedAt = now; x.decisionNote = clip(d.note, 500);
+
+  if (!d.approve) {
+    x.status = 'declined';
+    update('WorkSubmissions', x._row, x);
+    audit(user.id, 'declineWork', '', userName(x.userId) + ': ' + x.title, c.vessel.id);
+    if (crew && isTrue(crew.active)) {
+      sendMail(crew.email, 'Not approved: ' + x.title,
+        '<p>' + esc(user.name) + ' did not approve <b>' + esc(x.title) + '</b> (' + esc(c.vessel.name) + ').</p>' +
+        (x.decisionNote ? '<p><i>' + esc(x.decisionNote) + '</i></p>' : '') + appLink());
+    }
+    return listTaskReviews(c, user);
+  }
+
+  const title = clip(d.title || x.title, 200);
+  const system = d.system !== undefined ? clip(d.system, 60) : x.system;
+  let task, completionId = '', score = 0;
+  if (x.kind === 'suggest') {
+    const dueDate = d.dueDate || x.dueDate || today();
+    validateDate(dueDate);
+    const recurring = d.recurring !== undefined ? !!d.recurring : isTrue(x.recurring);
+    const iv = d.intervalValue || x.intervalValue, iu = d.intervalUnit || x.intervalUnit;
+    if (recurring) validateInterval(iv, iu);
+    const assign = d.assignToThem !== false && crewOnVessel(c, x.userId) ? x.userId : '';
+    task = { id: newId('T'), title, description: x.description, system, type: 'Routine', dueDate, dueTime: '',
+             recurring: recurring ? 'TRUE' : 'FALSE', intervalValue: recurring ? String(iv) : '', intervalUnit: recurring ? String(iu) : '',
+             assignedTo: assign, state: 'Open', createdBy: user.id, createdAt: now, lastPerformed: '', lastPerformedBy: '',
+             resolution: '', reminderLog: '', vesselId: c.vessel.id };
+    insert('Tasks', task);
+    audit(user.id, 'create', task.id, 'Routine: ' + title + ' (suggested by ' + userName(x.userId) + ', approved by ' + user.name + ')', c.vessel.id);
+  } else {
+    if (d.score) {
+      score = Math.round(Number(d.score));
+      if (!(score >= 1 && score <= 10)) throw new Error('Choose a score from 1 to 10');
+    }
+    const repeat = !!d.recurring;
+    if (repeat) validateInterval(d.intervalValue, d.intervalUnit);
+    task = { id: newId('T'), title, description: x.description, system, type: 'Routine',
+             dueDate: repeat ? addInterval(x.performedDate, d.intervalValue, d.intervalUnit) : '', dueTime: '',
+             recurring: repeat ? 'TRUE' : 'FALSE', intervalValue: repeat ? String(d.intervalValue) : '', intervalUnit: repeat ? String(d.intervalUnit) : '',
+             assignedTo: '', state: repeat ? 'Open' : 'Completed', createdBy: user.id, createdAt: now,
+             lastPerformed: x.performedDate, lastPerformedBy: x.userId, resolution: '', reminderLog: '', vesselId: c.vessel.id };
+    insert('Tasks', task);
+    completionId = newId('X');
+    insert('Completions', { id: completionId, taskId: task.id, dueDate: '', performedDate: x.performedDate, performedBy: x.userId,
+                            timing: 'Not scheduled', notes: x.description, loggedAt: now });
+    audit(user.id, 'complete', task.id, 'Performed ' + x.performedDate + ' by ' + userName(x.userId) + ' (logged by them, approved by ' + user.name + ')' +
+          (repeat ? '. Next due ' + task.dueDate : ''), c.vessel.id);
+    if (score) {
+      insert('TaskReviews', { id: newId('W'), vesselId: c.vessel.id, taskId: task.id, completionId, userId: x.userId, requestedAt: x.createdAt,
+        message: '', status: 'reviewed', reviewerId: user.id, score: String(score), text: clip(d.text, 1000), reviewedAt: now,
+        taskTitle: title, vesselName: c.vessel.name, reviewerLabel: '', reviewerName: '', workDate: x.performedDate });
+      audit(user.id, 'reviewWork', task.id, userName(x.userId) + ': ' + score + '/10', c.vessel.id);
+    }
+  }
+  // The description and photos become a note on the task, credited to the person who sent them.
+  const atts = readTable('Attachments').filter(a => a.taskId === 'WS:' + x.id);
+  if (x.description || atts.length) {
+    const note = { id: newId('N'), taskId: task.id, userId: x.userId, text: x.description, createdAt: x.createdAt };
+    insert('Notes', note);
+    atts.forEach(a => { a.taskId = task.id; a.noteId = note.id; a.vesselId = c.vessel.id; update('Attachments', a._row, a); });
+  }
+  x.status = 'approved'; x.taskId = task.id; x.completionId = completionId; x.title = title;
+  x.score = score ? String(score) : ''; x.reviewText = score ? clip(d.text, 1000) : '';
+  update('WorkSubmissions', x._row, x);
+  if (crew && isTrue(crew.active)) {
+    sendMail(crew.email, 'Approved: ' + title + (score ? ' (' + score + '/10)' : ''),
+      '<p>' + esc(user.name) + ' approved <b>' + esc(title) + '</b> on ' + esc(c.vessel.name) + '. ' +
+      (x.kind === 'suggest' ? 'It is now in the task list' + (task.assignedTo ? ' and assigned to you' : '') + ', due ' + task.dueDate + '.'
+                            : 'It is now in the vessel\'s maintenance log.') + '</p>' +
+      (score ? '<p style="font-size:22px;font-weight:bold">' + score + ' / 10</p>' + (x.reviewText ? '<p><i>' + esc(x.reviewText) + '</i></p>' : '') +
+               '<p>The score is now part of your CJM Marine record.</p>' : '') +
+      (x.decisionNote ? '<p><i>' + esc(x.decisionNote) + '</i></p>' : '') + appLink());
+  }
+  return listTaskReviews(c, user);
+}
+
+/** Files attached to a request: the sender, the vessel's Captain/Owner, or a CJM admin. */
+function getWorkFile(user, id) {
+  const a = readTable('Attachments').find(k => k.id === id && String(k.taskId).indexOf('WS:') === 0);
+  const x = a && readTable('WorkSubmissions').find(k => 'WS:' + k.id === a.taskId);
+  if (!x || !(x.userId === user.id || isTrue(user.isAdmin) || (x.vesselId && isVesselReviewer(x.vesselId, user.id)))) throw new Error('File not found');
+  return { ok: true, name: a.name, mimeType: a.mimeType, data: readFile(a.fileId) };
+}
+
+// ── answered from the email link, no account ──
+function workByToken(token) {
+  const x = token && readTable('WorkSubmissions').find(k => k.token && k.token === String(token));
+  if (!x) throw new Error('This link is not valid. The job may have been withdrawn.');
+  return x;
+}
+
+function getWorkReview(token) {
+  const x = workByToken(token);
+  const u = readTable('Users').find(k => k.id === x.userId) || {};
+  const pr = profileOf(x.userId) || {};
+  return { ok: true, job: {
+    title: x.title, system: x.system, description: x.description, performedDate: x.performedDate, boatName: x.boatName,
+    contactName: x.contactName, crewName: u.name || '', crewHeadline: pr.headline || '', wantScore: isTrue(x.wantScore),
+    status: x.status === 'pending' && x.tokenExpires < today() ? 'expired' : x.status,
+    score: x.score ? Number(x.score) : null, reviewText: x.reviewText, decidedLabel: x.decidedLabel,
+    attachments: workFiles(x.id) }, roles: WORK_ROLES, joinUrl: joinUrl(x.boatName) };
+}
+
+function answerWorkReview(token, a) {
+  const x = workByToken(token);
+  if (x.status === 'cancelled') throw new Error('This job was withdrawn');
+  if (x.status !== 'pending') throw new Error('This job was already answered');
+  if (x.tokenExpires < today()) throw new Error('This link has expired');
+  const name = clip(a.name, 80);
+  if (!name) throw new Error('Enter your name');
+  const role = WORK_ROLES.indexOf(a.role) !== -1 ? a.role : 'Captain';
+  let score = 0;
+  if (a.approve && a.score) {
+    score = Math.round(Number(a.score));
+    if (!(score >= 1 && score <= 10)) throw new Error('Choose a score from 1 to 10');
+  }
+  const now = nowIso(), text = clip(a.text, 1000);
+  x.status = a.approve ? 'approved' : 'declined'; x.decidedLabel = role + ' ' + name; x.decidedAt = now;
+  x.score = score ? String(score) : ''; x.reviewText = a.approve ? text : ''; x.decisionNote = a.approve ? '' : text;
+  update('WorkSubmissions', x._row, x);
+  if (score) {
+    insert('TaskReviews', { id: newId('W'), vesselId: '', taskId: '', completionId: '', userId: x.userId, requestedAt: x.createdAt,
+      message: '', status: 'reviewed', reviewerId: '', score: String(score), text, reviewedAt: now, taskTitle: x.title,
+      vesselName: x.boatName, reviewerLabel: role, reviewerName: name, workDate: x.performedDate });
+  }
+  audit('', a.approve ? 'approveWorkByEmail' : 'declineWorkByEmail', '', x.title + ' (' + x.boatName + ') by ' + x.contactEmail + (score ? ': ' + score + '/10' : ''), '');
+  const crew = readTable('Users').find(u => u.id === x.userId);
+  if (crew && isTrue(crew.active)) {
+    sendMail(crew.email, (a.approve ? 'Confirmed: ' : 'Not confirmed: ') + x.title + (score ? ' (' + score + '/10)' : ''),
+      '<p>' + esc(role + ' ' + name) + ' of ' + esc(x.boatName) + (a.approve ? ' confirmed' : ' did not confirm') + ' <b>' + esc(x.title) + '</b>.</p>' +
+      (score ? '<p style="font-size:22px;font-weight:bold">' + score + ' / 10</p><p>The score is now part of your CJM Marine record.</p>' : '') +
+      (text ? '<p><i>' + esc(text) + '</i></p>' : '') + appLink());
+  }
+  return getWorkReview(token);
+}
+
+function workReviewFile(token, id) {
+  const x = workByToken(token);
+  const a = readTable('Attachments').find(k => k.id === id && k.taskId === 'WS:' + x.id);
+  if (!a) throw new Error('File not found');
+  return { ok: true, name: a.name, mimeType: a.mimeType, data: readFile(a.fileId) };
+}
+
+/** Demo: a suggestion and a piece of unlisted work waiting for the Captain of the demo yacht. */
+function addDemoWorkRequests_(v, deck, stew) {
+  deleteRowsWhere('WorkSubmissions', r => r.vesselId === v.id);
+  const now = nowIso(), base = { vesselId: v.id, boatName: v.name, contactEmail: '', contactName: '', token: '', tokenExpires: '',
+    status: 'pending', decidedBy: '', decidedLabel: '', decidedAt: '', decisionNote: '', score: '', reviewText: '', taskId: '', completionId: '', createdAt: now };
+  insert('WorkSubmissions', Object.assign({}, base, { id: newId('J'), kind: 'suggest', userId: deck, title: 'Check tender davit wire for broken strands',
+    system: 'Tender & toys', description: 'Saw some fraying near the drum on the port davit. Suggest a monthly check.', performedDate: '',
+    dueDate: addInterval(today(), 3, 'days'), recurring: 'TRUE', intervalValue: '1', intervalUnit: 'months', wantScore: 'FALSE' }));
+  insert('WorkSubmissions', Object.assign({}, base, { id: newId('J'), kind: 'done', userId: stew, title: 'Descaled the crew mess coffee machine',
+    system: 'Galley', description: 'Was tripping the breaker. Descaled and cleaned the group head; working normally now.',
+    performedDate: addInterval(today(), -1, 'days'), dueDate: '', recurring: 'FALSE', intervalValue: '', intervalUnit: '', wantScore: 'TRUE' }));
 }

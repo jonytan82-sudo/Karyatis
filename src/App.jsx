@@ -16,10 +16,15 @@ import Invites from './components/Invites.jsx';
 import Logo from './components/Logo.jsx';
 import Icon from './components/Icons.jsx';
 import Hero from './components/Hero.jsx';
+import Rotation from './components/Rotation.jsx';
 import Landing from './components/Landing.jsx';
+import SubmitWork from './components/SubmitWork.jsx';
+import ExternalReview from './components/ExternalReview.jsx';
 
-const VESSEL_TABS = ['board', 'calendar', 'tasks', 'crew', 'reviews'];
-const ICONS = { board: 'gauge', calendar: 'calendar', tasks: 'check', crew: 'crew', reviews: 'star', vessels: 'yacht', profile: 'user', directory: 'search', admin: 'shield' };
+const REVIEW_TOKEN = new URLSearchParams(window.location.search).get('w') || '';
+
+const VESSEL_TABS = ['board', 'calendar', 'tasks', 'crew', 'rotation', 'reviews'];
+const ICONS = { board: 'gauge', calendar: 'calendar', tasks: 'check', crew: 'crew', rotation: 'rotation', reviews: 'star', vessels: 'yacht', profile: 'user', directory: 'search', admin: 'shield' };
 const PHONE = '(max-width: 700px)';
 
 function usePhone() {
@@ -42,6 +47,8 @@ export default function App() {
   const [openId, setOpenId] = useState(null);
   const [editing, setEditing] = useState(null);
   const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [sentMsg, setSentMsg] = useState('');
   const phone = usePhone();
   const [home, setHome] = useState(true); // phone: showing the menu screen
 
@@ -123,6 +130,7 @@ export default function App() {
     setS(null);
   }
 
+  if (REVIEW_TOKEN) return <ExternalReview token={REVIEW_TOKEN} />;
   if (checking) return <div className="splash"><Logo size="lg" /><small>Loading…</small></div>;
   if (!s) {
     // Public landing page for visitors; the login form lives at /login (and opens for setup or sign-up links).
@@ -138,6 +146,7 @@ export default function App() {
   const tabs = [];
   if (vessel) tabs.push(['board', perms.contractor ? 'My jobs' : 'Board'], ['calendar', 'Calendar'], ['tasks', 'All tasks']);
   if (vessel && !perms.contractor) tabs.push(['crew', 'Crew']);
+  if (vessel && !perms.contractor) tabs.push(['rotation', 'Rotation']);
   if (vessel && s.canReviewWork) tabs.push(['reviews', 'Reviews']);
   if (vesselOptions.length > 1 || (!vessel && vesselOptions.length) || s.canRequestVessel) tabs.push(['vessels', 'Vessels']);
   tabs.push(['profile', 'My profile']);
@@ -146,6 +155,8 @@ export default function App() {
   const onVesselTab = vessel && VESSEL_TABS.includes(tab);
   const badgeFor = (key) => (key === 'crew' ? s.vesselRequests : key === 'reviews' ? s.pendingTaskReviews : key === 'admin' ? s.pendingRequests : 0) || 0;
   const newTaskLabel = perms && (perms.createRoutine ? 'New task' : perms.contractor ? 'Record finding' : 'Report issue');
+  const canSubmit = vessel && s.canSubmitWork;
+  const submitLabel = perms && perms.createRoutine ? 'Suggest or log work' : 'Log work or suggest';
   const tabLabel = (tabs.find(([k]) => k === tab) || [])[1] || '';
 
   const switcher = vesselOptions.length > 1 && (
@@ -166,6 +177,7 @@ export default function App() {
       )}
       <Invites invites={s.invites || []} onDone={(r) => load(r)} />
       {error && <div className="alert">{error} <button className="link" onClick={refresh}>Retry</button></div>}
+      {sentMsg && <div className="ok">{sentMsg} <button className="link" onClick={() => setSentMsg('')}>OK</button></div>}
     </>
   );
 
@@ -174,6 +186,7 @@ export default function App() {
       {tab === 'board' && vessel && <Board tasks={s.tasks || []} onOpen={setOpenId} />}
       {tab === 'calendar' && vessel && <Calendar version={version} onOpen={setOpenId} />}
       {tab === 'tasks' && vessel && <TaskList tasks={s.tasks || []} onOpen={setOpenId} />}
+      {tab === 'rotation' && vessel && !perms.contractor && <Rotation user={user} onOpenTask={setOpenId} />}
       {tab === 'reviews' && vessel && s.canReviewWork && <WorkReviews vessel={vessel} onChanged={refresh} />}
       {tab === 'crew' && vessel && !perms.contractor && (
         <Crew user={user} vessel={vessel} perms={perms} crew={crew} catalog={s.catalog} onChanged={refresh} />
@@ -194,6 +207,10 @@ export default function App() {
           onChanged={refresh}
           onEdit={(t) => { setOpenId(null); setEditing(t); }}
         />
+      )}
+      {submitting && (
+        <SubmitWork vessel={vessel} kinds={vessel && s.canSubmitWork ? ['done', 'suggest', 'external'] : ['external']}
+          onClose={() => setSubmitting(false)} onSent={(m) => { setSubmitting(false); setSentMsg(m); }} />
       )}
       {editing && vessel && (
         <TaskForm
@@ -236,6 +253,9 @@ export default function App() {
           {vessel && perms.canReport && (
             <button className="m-cta" onClick={() => setEditing('new')}><Icon name="plus" /> {newTaskLabel}</button>
           )}
+          {canSubmit && !perms.createRoutine && (
+            <button className="m-cta m-cta2" onClick={() => setSubmitting(true)}><Icon name="check" /> {submitLabel}</button>
+          )}
           <Hero />
           <div className="m-foot">
             <span>Simplify. Organize. Perform.</span>
@@ -264,7 +284,10 @@ export default function App() {
           {content}
         </main>
         {onVesselTab && perms.canReport && (
-          <button className="btn primary new-task" onClick={() => setEditing('new')}>{newTaskLabel}</button>
+          <div className="new-task fab-row">
+            {canSubmit && !perms.createRoutine && <button className="btn" onClick={() => setSubmitting(true)}>{submitLabel}</button>}
+            <button className="btn primary" onClick={() => setEditing('new')}>{newTaskLabel}</button>
+          </div>
         )}
         {overlays}
       </div>
@@ -295,8 +318,11 @@ export default function App() {
             {badgeFor(key) > 0 && <span className="badge">{badgeFor(key)}</span>}
           </button>
         ))}
+        {onVesselTab && canSubmit && !perms.createRoutine && (
+          <button className="btn new-task submit-work-btn" onClick={() => setSubmitting(true)}>{submitLabel}</button>
+        )}
         {onVesselTab && perms.canReport && (
-          <button className="btn primary new-task" onClick={() => setEditing('new')}>{newTaskLabel}</button>
+          <button className={`btn primary ${canSubmit && !perms.createRoutine ? '' : 'new-task'}`} onClick={() => setEditing('new')}>{newTaskLabel}</button>
         )}
       </nav>
 

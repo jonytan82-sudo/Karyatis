@@ -3,7 +3,7 @@ import { call } from '../api.js';
 import { fileKind, fileSize, isImage } from '../files.js';
 
 /** Thumbnails and file chips under a note. Opening one fetches it (only the vessel's crew can). */
-export function AttachmentList({ items }) {
+export function AttachmentList({ items, action = 'getAttachment', extra }) {
   const [open, setOpen] = useState(null);
   if (!items || !items.length) return null;
   return (
@@ -17,24 +17,24 @@ export function AttachmentList({ items }) {
           </li>
         ))}
       </ul>
-      {open && <Viewer item={open} onClose={() => setOpen(null)} />}
+      {open && <Viewer item={open} action={action} extra={extra} onClose={() => setOpen(null)} />}
     </>
   );
 }
 
-function Viewer({ item, onClose }) {
+function Viewer({ item, action, extra, onClose }) {
   const [file, setFile] = useState(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
     let url = '';
-    call('getAttachment', { id: item.id }).then((r) => {
+    call(action, { ...(extra || {}), id: item.id }).then((r) => {
       const bytes = Uint8Array.from(atob(r.data), (c) => c.charCodeAt(0));
       url = URL.createObjectURL(new Blob([bytes], { type: r.mimeType }));
       setFile({ url, name: r.name, mimeType: r.mimeType });
     }).catch((e) => setError(e.message));
     return () => { if (url) URL.revokeObjectURL(url); };
-  }, [item.id]);
+  }, [item.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     // Escape closes only this viewer, not the task window underneath.

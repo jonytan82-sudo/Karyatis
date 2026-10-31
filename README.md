@@ -68,6 +68,42 @@ React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
 5. Web addresses typed or pasted in notes, descriptions, resolutions and the activity log are clickable.
 6. CJM admin tab should show `Google Script version: 2.5 (photos and files on notes)`.
 
+## Upgrade to 3.1 (crew suggestions and job approvals)
+1. Paste the new `apps-script/Code.gs`, save, then Deploy → Manage deployments → pencil (on the deployment your site uses) → **New version** → Deploy.
+   The WorkSubmissions tab is created automatically; TaskReviews gets four extra columns on its own.
+2. Upload this folder to GitHub.
+3. Crew (not view-only) get a **Log work or suggest** button on their vessel:
+   - **Suggest a task**: the Captain or Owner approves it into the task list (sets the due date, repeat, assigns it to them) or declines it.
+   - **I did a job**: work not in the list. Once approved it is logged as performed by them, optionally scored 1–10, and can become a recurring task.
+4. Anyone (crew or contractor) can log a **job on another boat** from My profile → Jobs and approvals, naming its Captain or Owner by email:
+   - Boat on CJM Marine: it waits in that Captain's **Reviews** tab and goes into the log only when approved.
+   - Boat not on CJM Marine: the Captain gets an email link to confirm and score it with no account, plus an optional invitation to join.
+5. Nothing enters a vessel's log without the Captain or Owner's approval. Approvals sit in the Reviews tab (its badge counts them).
+6. Demo yacht: run `addDemoRotations` again to add a demo suggestion and a demo unlisted job for the Captain to approve.
+7. CJM admin tab should show `Google Script version: 3.1 (crew suggestions and job approvals)`.
+
+## Upgrade to 3.0 (rotation and handover)
+1. Paste the new `apps-script/Code.gs`, save, then Deploy → Manage deployments → pencil (on the deployment your site uses) → **New version** → Deploy.
+   The Rotations, RotationChanges, RotationRules and Handovers tabs are created automatically.
+2. Upload this folder to GitHub.
+3. Every vessel gets a **Rotation** tab (not for contractors):
+   - **Handover**: 3 days before someone goes off rotation they are asked to hand over. The handover drafts itself from the log (overdue jobs,
+     open issues, due in 3 weeks, their sign-offs and notes this rotation); they add a line and photos and send. The relief and the Captain are
+     emailed; the relief taps "Got it". Anyone can also write a handover any time.
+   - **Calendar**: who is aboard each day by department, with daily totals. The Captain taps a name to set a pattern (10 weeks on/10 off, 2/2 months,
+     3:1, 6:3 weeks, custom) and an optional back-to-back relief, who automatically gets the opposite half.
+   - **Minimum crew** per department or in total; short days turn red. Crew without a rotation are always aboard (small boats need no setup).
+   - **Leave and extra days**: crew request, the Captain approves (emailed both ways).
+   - Sea time on a profile counts only days actually aboard when the vessel uses rotations.
+4. Demo yacht: run `addDemoRotations` once in Apps Script (new demos built with `createDemoVessel` include it). Log in as jake.turner@meridianstar.test
+   to see the handover prompt.
+5. CJM admin tab should show `Google Script version: 3.0 (rotation and handover)`.
+
+## Upgrade to 2.9.1 (request emails)
+- New account requests are emailed to every CJM admin, to the addresses in `CONFIG.REQUEST_NOTIFY` (support@cjm-aero.com),
+  and to the captains/owners of the yacht named in the request. Yacht requests go to admins and `REQUEST_NOTIFY`.
+- Paste Code.gs, save, Deploy → Manage deployments → pencil (on the deployment your site uses) → New version → Deploy. No website change.
+
 ## Upgrade to 2.9 (delete, download and upload vessels)
 1. Paste the new `apps-script/Code.gs`, save, then Deploy → Manage deployments → pencil → **New version** → Deploy.
 2. Upload this folder to GitHub.
