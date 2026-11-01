@@ -24,7 +24,7 @@ export default function ExternalReview({ token }) {
   const j = r && r.job;
   return (
     <div className="ext-review">
-      <header className="ext-top"><Logo size="md" /></header>
+      <header className="ext-top"><Logo size="sm" /><a className="top-join" href="/login?request=1&as=captain">Open a free account</a></header>
       <main className="ext-main card">
         {!r && !error && <p className="empty">Loading…</p>}
         {error && <div className="alert">{error}</div>}
@@ -69,8 +69,8 @@ export default function ExternalReview({ token }) {
 
             <div className="ext-invite">
               <b>Keep {j.boatName}'s maintenance on CJM Marine?</b>
-              <p>CJM Marine keeps maintenance logs, crew, rotations and handovers in one place, and jobs like this one land straight in your log once you approve them. It is optional.</p>
-              <a className="btn" href={r.joinUrl}>Request {j.boatName} on CJM Marine</a>
+              <p>CJM Marine keeps maintenance logs, crew, rotations and handovers in one place, and jobs like this one land straight in your log once you approve them. Creating an account is free and optional.</p>
+              <a className="btn primary" href={r.joinUrl}>Create a free account for {j.boatName}</a>
             </div>
           </>
         )}

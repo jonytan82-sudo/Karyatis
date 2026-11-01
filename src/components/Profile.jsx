@@ -50,10 +50,10 @@ function resizePhoto(file) {
 
 const SUBTABS = [['edit', 'Edit profile'], ['preview', 'Preview and reviews'], ['jobs', 'Jobs and approvals'], ['card', 'Business card'], ['password', 'Password']];
 
-export default function Profile({ user, onChanged }) {
+export default function Profile({ user, onChanged, startSub, onJobsSeen, jobBadge = 0 }) {
   const [data, setData] = useState(null);
   const [f, setF] = useState(null);
-  const [sub, setSub] = useState('edit');
+  const [sub, setSub] = useState(startSub || 'edit');
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -116,7 +116,7 @@ export default function Profile({ user, onChanged }) {
     <div className="profile">
       <nav className="subtabs">
         {SUBTABS.map(([k, label]) => (
-          <button key={k} className={sub === k ? 'on' : ''} onClick={() => { setSub(k); setMsg(''); setError(''); }}>{label}</button>
+          <button key={k} className={sub === k ? 'on' : ''} onClick={() => { setSub(k); setMsg(''); setError(''); }}>{label}{k === 'jobs' && jobBadge > 0 && <span className="badge">{jobBadge}</span>}</button>
         ))}
       </nav>
       {msg && <div className="ok">{msg}</div>}
@@ -211,7 +211,7 @@ export default function Profile({ user, onChanged }) {
         </>
       )}
 
-      {sub === 'jobs' && <MyJobs />}
+      {sub === 'jobs' && <MyJobs onSeen={onJobsSeen} />}
 
       {sub === 'card' && data && <BusinessCard profile={data.profile} onEnableSharing={enableSharing} />}
 

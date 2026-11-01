@@ -1,4 +1,4 @@
-/**  
+/**
  * CJM MARINE — Multi-vessel maintenance platform and crew directory
  * Google Apps Script backend, bound to one Google Sheet.
  *
@@ -14,7 +14,7 @@
  *                body: JSON.stringify({ action, token, vesselId, ... }) })
  */
 
-const SCRIPT_VERSION = '3.1 (crew suggestions and job approvals)';
+const SCRIPT_VERSION = '3.1.1 (job answers shown in the app)';
 
 // ───────────────────────── CONFIG ─────────────────────────
 const CONFIG = {
@@ -74,7 +74,7 @@ const SHEETS = {
   WorkSubmissions: ['id', 'kind', 'vesselId', 'boatName', 'userId', 'title', 'system', 'description', 'performedDate',
                     'dueDate', 'recurring', 'intervalValue', 'intervalUnit', 'wantScore', 'contactEmail', 'contactName',
                     'token', 'tokenExpires', 'status', 'decidedBy', 'decidedLabel', 'decidedAt', 'decisionNote',
-                    'score', 'reviewText', 'taskId', 'completionId', 'createdAt'],
+                    'score', 'reviewText', 'taskId', 'completionId', 'createdAt', 'senderSeen'],
   Audit:       ['timestamp', 'userId', 'action', 'taskId', 'details', 'vesselId']
 };
 
@@ -365,7 +365,7 @@ function doPost(e) {
 
       // crew suggestions, unlisted work and jobs on other boats
       submitWork:     () => withLock(() => submitWork(user, req.work || {})),
-      myWork:         () => ({ ok: true, submissions: mySubmissions(user) }),
+      myWork:         () => withLock(() => ({ ok: true, submissions: mySubmissions(user, true) })),
       cancelWork:     () => withLock(() => cancelWork(user, req.id)),
       decideWork:     () => withLock(() => decideWork(V(), user, req.id, req.decision || {})),
       getWorkFile:    () => getWorkFile(user, req.id),
@@ -676,6 +676,7 @@ function bootstrap(user, vesselId) {
     vessels: isTrue(user.isAdmin) ? vessels.map(v => ({ vesselId: v.id, vesselName: v.name })) : undefined,
     pendingRequests: countPendingRequests(user),
     canRequestVessel: canRequestVessel(user),
+    jobUpdates: jobUpdatesFor(user.id),
     catalog: roleCatalog()
   };
 
@@ -1520,6 +1521,7 @@ function adminOverview() {
   });
   return {
     ok: true, vessels,
+    emailQuota: (function () { try { return MailApp.getRemainingDailyQuota(); } catch (e) { return null; } })(),
     users: users.filter(u => !isDeletedUser(u)).map(u => ({
       id: u.id, name: u.name, email: u.email, active: isTrue(u.active), isAdmin: isTrue(u.isAdmin),
       needsSetup: !u.passwordHash,
@@ -3322,12 +3324,18 @@ function workFiles(subId) {
   return readTable('Attachments').filter(a => a.taskId === 'WS:' + subId).map(attachmentView);
 }
 
-function mySubmissions(user) {
+/** Jobs the person sent that were answered since they last looked. */
+function jobUpdatesFor(userId) {
+  if (!SHEETS.WorkSubmissions) return 0;
+  return readTable('WorkSubmissions').filter(x => x.userId === userId && (x.status === 'approved' || x.status === 'declined') && !isTrue(x.senderSeen)).length;
+}
+
+function mySubmissions(user, markSeen) {
   const vs = {}; readTable('Vessels').forEach(v => vs[v.id] = v.name);
   const names = crewNames();
   const files = {};
   readTable('Attachments').forEach(a => { if (String(a.taskId).indexOf('WS:') === 0) (files[a.taskId.slice(3)] = files[a.taskId.slice(3)] || []).push(attachmentView(a)); });
-  return readTable('WorkSubmissions').filter(x => x.userId === user.id && x.status !== 'cancelled')
+  const list = readTable('WorkSubmissions').filter(x => x.userId === user.id && x.status !== 'cancelled')
     .sort((a, b) => a.createdAt < b.createdAt ? 1 : -1).slice(0, 60)
     .map(x => ({ id: x.id, kind: x.kind, kindLabel: WORK_KINDS[x.kind], title: x.title, system: x.system, description: x.description,
                  performedDate: x.performedDate, boatName: vs[x.vesselId] || x.boatName, onPlatform: !!x.vesselId,
@@ -3335,7 +3343,13 @@ function mySubmissions(user) {
                  status: x.status === 'pending' && x.tokenExpires && x.tokenExpires < today() ? 'expired' : x.status,
                  decidedBy: names[x.decidedBy] || x.decidedLabel || '', decidedAt: x.decidedAt, decisionNote: x.decisionNote,
                  score: x.score ? Number(x.score) : null, reviewText: x.reviewText, createdAt: x.createdAt,
+                 isNew: (x.status === 'approved' || x.status === 'declined') && !isTrue(x.senderSeen),
                  attachments: files[x.id] || [] }));
+  if (markSeen) {
+    readTable('WorkSubmissions').filter(x => x.userId === user.id && (x.status === 'approved' || x.status === 'declined') && !isTrue(x.senderSeen))
+      .forEach(x => { x.senderSeen = 'TRUE'; update('WorkSubmissions', x._row, x); });
+  }
+  return list;
 }
 
 function cancelWork(user, id) {
@@ -3380,7 +3394,7 @@ function decideWork(c, user, id, d) {
   if (x.userId === user.id) throw new Error('You cannot approve your own request');
   const crew = readTable('Users').find(u => u.id === x.userId);
   const now = nowIso();
-  x.decidedBy = user.id; x.decidedAt = now; x.decisionNote = clip(d.note, 500);
+  x.decidedBy = user.id; x.decidedAt = now; x.decisionNote = clip(d.note, 500); x.senderSeen = '';
 
   if (!d.approve) {
     x.status = 'declined';
@@ -3498,7 +3512,7 @@ function answerWorkReview(token, a) {
     if (!(score >= 1 && score <= 10)) throw new Error('Choose a score from 1 to 10');
   }
   const now = nowIso(), text = clip(a.text, 1000);
-  x.status = a.approve ? 'approved' : 'declined'; x.decidedLabel = role + ' ' + name; x.decidedAt = now;
+  x.status = a.approve ? 'approved' : 'declined'; x.decidedLabel = role + ' ' + name; x.decidedAt = now; x.senderSeen = '';
   x.score = score ? String(score) : ''; x.reviewText = a.approve ? text : ''; x.decisionNote = a.approve ? '' : text;
   update('WorkSubmissions', x._row, x);
   if (score) {
@@ -3509,10 +3523,11 @@ function answerWorkReview(token, a) {
   audit('', a.approve ? 'approveWorkByEmail' : 'declineWorkByEmail', '', x.title + ' (' + x.boatName + ') by ' + x.contactEmail + (score ? ': ' + score + '/10' : ''), '');
   const crew = readTable('Users').find(u => u.id === x.userId);
   if (crew && isTrue(crew.active)) {
-    sendMail(crew.email, (a.approve ? 'Confirmed: ' : 'Not confirmed: ') + x.title + (score ? ' (' + score + '/10)' : ''),
+    const sentOk = sendMail(crew.email, (a.approve ? 'Confirmed: ' : 'Not confirmed: ') + x.title + (score ? ' (' + score + '/10)' : ''),
       '<p>' + esc(role + ' ' + name) + ' of ' + esc(x.boatName) + (a.approve ? ' confirmed' : ' did not confirm') + ' <b>' + esc(x.title) + '</b>.</p>' +
       (score ? '<p style="font-size:22px;font-weight:bold">' + score + ' / 10</p><p>The score is now part of your CJM Marine record.</p>' : '') +
       (text ? '<p><i>' + esc(text) + '</i></p>' : '') + appLink());
+    if (!sentOk) audit('', 'emailFailed', '', crew.email + ': ' + x.title, '');
   }
   return getWorkReview(token);
 }

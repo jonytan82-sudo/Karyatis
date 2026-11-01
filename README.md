@@ -68,6 +68,12 @@ React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
 5. Web addresses typed or pasted in notes, descriptions, resolutions and the activity log are clickable.
 6. CJM admin tab should show `Google Script version: 2.5 (photos and files on notes)`.
 
+## Upgrade to 3.1.1 (job answers shown in the app)
+Paste Code.gs → save → Manage deployments → pencil → New version → Deploy, then upload this folder to GitHub.
+- When a Captain or Owner answers a job, the sender sees a notice and a badge on My profile at their next login (not only the email).
+- The public reviews page (business card QR) invites visitors to create a free account, and captains to put their boat on CJM Marine.
+- CJM admin tab shows how many emails Google still allows today. Emails that fail are written to the activity log as "emailFailed".
+
 ## Upgrade to 3.1 (crew suggestions and job approvals)
 1. Paste the new `apps-script/Code.gs`, save, then Deploy → Manage deployments → pencil (on the deployment your site uses) → **New version** → Deploy.
    The WorkSubmissions tab is created automatically; TaskReviews gets four extra columns on its own.

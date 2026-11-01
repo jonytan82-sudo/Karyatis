@@ -49,6 +49,7 @@ export default function App() {
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [sentMsg, setSentMsg] = useState('');
+  const [profileSub, setProfileSub] = useState('');
   const phone = usePhone();
   const [home, setHome] = useState(true); // phone: showing the menu screen
 
@@ -153,7 +154,8 @@ export default function App() {
   if (user.canSearch) tabs.push(['directory', 'Find crew']);
   if (user.isAdmin) tabs.push(['admin', 'CJM admin']);
   const onVesselTab = vessel && VESSEL_TABS.includes(tab);
-  const badgeFor = (key) => (key === 'crew' ? s.vesselRequests : key === 'reviews' ? s.pendingTaskReviews : key === 'admin' ? s.pendingRequests : 0) || 0;
+  const badgeFor = (key) => (key === 'crew' ? s.vesselRequests : key === 'reviews' ? s.pendingTaskReviews : key === 'admin' ? s.pendingRequests : key === 'profile' ? s.jobUpdates : 0) || 0;
+  const openJobs = () => { setProfileSub('jobs'); openTab('profile'); };
   const newTaskLabel = perms && (perms.createRoutine ? 'New task' : perms.contractor ? 'Record finding' : 'Report issue');
   const canSubmit = vessel && s.canSubmitWork;
   const submitLabel = perms && perms.createRoutine ? 'Suggest or log work' : 'Log work or suggest';
@@ -177,6 +179,12 @@ export default function App() {
       )}
       <Invites invites={s.invites || []} onDone={(r) => load(r)} />
       {error && <div className="alert">{error} <button className="link" onClick={refresh}>Retry</button></div>}
+      {s.jobUpdates > 0 && tab !== 'profile' && (
+        <div className="ok job-news">
+          {s.jobUpdates === 1 ? 'A captain answered one of your jobs.' : `Captains answered ${s.jobUpdates} of your jobs.`}{' '}
+          <button className="link" onClick={openJobs}>See the result</button>
+        </div>
+      )}
       {sentMsg && <div className="ok">{sentMsg} <button className="link" onClick={() => setSentMsg('')}>OK</button></div>}
     </>
   );
@@ -192,7 +200,8 @@ export default function App() {
         <Crew user={user} vessel={vessel} perms={perms} crew={crew} catalog={s.catalog} onChanged={refresh} />
       )}
       {tab === 'vessels' && <Vessels options={vesselOptions} current={vessel} busy={busy} onOpen={openVessel} canRequest={s.canRequestVessel} onChanged={refresh} />}
-      {tab === 'profile' && <Profile user={user} vessel={vessel} onChanged={refresh} />}
+      {tab === 'profile' && <Profile key={profileSub} user={user} vessel={vessel} onChanged={refresh} startSub={profileSub} jobBadge={s.jobUpdates || 0}
+        onJobsSeen={() => setS((v) => ({ ...v, jobUpdates: 0 }))} />}
       {tab === 'directory' && user.canSearch && <Directory catalog={s.catalog} />}
       {tab === 'admin' && user.isAdmin && <Admin user={user} catalog={s.catalog} onOpenVessel={openVessel} onChanged={refresh} />}
     </>

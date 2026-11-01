@@ -203,7 +203,7 @@ export default function Admin({ user, catalog, onOpenVessel, onChanged }) {
       </section>
       <AdminCard user={user} />
 
-      <p className="hint">Google Script version: {server || 'checking…'}</p>
+      <p className="hint">Google Script version: {server || 'checking…'}{data && data.emailQuota != null && <> · Emails left today: <b className={data.emailQuota < 10 ? 'warn-text' : ''}>{data.emailQuota}</b>{data.emailQuota < 10 && ' (Google’s daily limit; it resets every 24 hours)'}</>}</p>
     </div>
   );
 }

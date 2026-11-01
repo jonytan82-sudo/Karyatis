@@ -7,14 +7,14 @@ import SubmitWork from './SubmitWork.jsx';
 const STATUS = { pending: ['Waiting', 'st-wait'], approved: ['Approved', 'st-ok'], declined: ['Not approved', 'st-no'], expired: ['Link expired', 'st-no'] };
 
 /** Everything a person sent for approval: suggestions, unlisted work and jobs on other boats. */
-export default function MyJobs() {
+export default function MyJobs({ onSeen }) {
   const [list, setList] = useState(null);
   const [open, setOpen] = useState(false);
   const [msg, setMsg] = useState('');
   const [error, setError] = useState('');
 
-  const load = () => call('myWork').then((r) => setList(r.submissions)).catch((e) => setError(e.message));
-  useEffect(() => { load(); }, []);
+  const load = () => call('myWork').then((r) => { setList(r.submissions); if (r.submissions.some((x) => x.isNew) && onSeen) onSeen(); }).catch((e) => setError(e.message));
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function cancel(id) {
     setError('');
@@ -38,13 +38,13 @@ export default function MyJobs() {
         {list && !list.length && <p className="empty">Nothing sent yet. Crew can also suggest tasks or log unlisted work from their vessel.</p>}
         <ul className="wr-list">
           {(list || []).map((x) => (
-            <li key={x.id} className="wr card">
+            <li key={x.id} className={`wr card${x.isNew ? ' is-new' : ''}`}>
               <div className="wr-head">
                 <div>
                   <b>{x.title}</b>
                   <span className="wr-task">{x.kindLabel}, {x.boatName}{x.system && <small>, {x.system}</small>}</span>
                 </div>
-                <span className={`st ${(STATUS[x.status] || [])[1] || ''}`}>{(STATUS[x.status] || [x.status])[0]}</span>
+                <span className="st-wrap">{x.isNew && <span className="new-tag">New</span>}<span className={`st ${(STATUS[x.status] || [])[1] || ''}`}>{(STATUS[x.status] || [x.status])[0]}</span></span>
               </div>
               <small className="muted">
                 {x.performedDate ? `Done ${fmtDate(x.performedDate)}. ` : ''}Sent {fmtStamp(x.createdAt)}{x.contactEmail ? ` to ${x.contactEmail}` : ''}
