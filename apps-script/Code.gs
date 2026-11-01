@@ -14,7 +14,7 @@
  *                body: JSON.stringify({ action, token, vesselId, ... }) })
  */
 
-const SCRIPT_VERSION = '3.5 (marine supplies links)';
+const SCRIPT_VERSION = '3.6 (suggested and saved supply items)';
 
 // ───────────────────────── CONFIG ─────────────────────────
 const CONFIG = {
@@ -84,6 +84,8 @@ const SHEETS = {
   RuleHistory: ['id', 'ruleId', 'version', 'action', 'changedBy', 'changedAt', 'note', 'snapshot'],
   // Purchase Supplies: which tasks get a supplier search, and the search term (edited by CJM admin)
   SupplyMaps:  ['id', 'match', 'term', 'category', 'enabled', 'note', 'verify', 'updatedBy', 'updatedAt'],
+  // Exact items saved on a task (kept for every time a recurring task comes due)
+  TaskSupplies: ['id', 'vesselId', 'taskId', 'name', 'url', 'partNumber', 'qty', 'note', 'addedBy', 'addedAt'],
   Audit:       ['timestamp', 'userId', 'action', 'taskId', 'details', 'vesselId']
 };
 
@@ -375,6 +377,8 @@ function doPost(e) {
 
       // marine supplies links (CJM admin)
       adminSupplies:      () => { requireAdmin(user); return adminSupplies(); },
+      addTaskSupply:      () => withLock(() => addTaskSupply(V(), user, req.taskId, req.item || {})),
+      removeTaskSupply:   () => withLock(() => removeTaskSupply(V(), user, req.id)),
       saveSupplyMap:      () => { requireAdmin(user); return withLock(() => saveSupplyMap(user, req.map || {})); },
       deleteSupplyMap:    () => { requireAdmin(user); return withLock(() => deleteSupplyMap(user, req.id)); },
       loadSupplyDefaults: () => { requireAdmin(user); return withLock(() => loadSupplyDefaults(user, req.maps)); },
@@ -1655,7 +1659,8 @@ function getTask(c, user, id) {
     });
   const history = readTable('Audit').filter(a => a.taskId === id)
     .map(a => ({ timestamp: a.timestamp, action: a.action, details: a.details, by: names[a.userId] || a.userId }));
-  return { ok: true, task: decorate(c, t, names, user), notes, completions, history, canRequestReview: hasReviewer };
+  return { ok: true, task: decorate(c, t, names, user), notes, completions, history, canRequestReview: hasReviewer,
+           supplyItems: taskSupplyItems(c, t.id, names) };
 }
 
 function crewOnVessel(c, userId) {
@@ -2158,7 +2163,7 @@ const TABLE_CACHE = {}; // lives for one request only
 
 const HEADERS_CHECKED = {};
 
-const AUTO_TABS = ['TaskReviews', 'Attachments', 'StoredFiles', 'VesselRequests', 'Rotations', 'RotationChanges', 'RotationRules', 'Handovers', 'WorkSubmissions', 'Rules', 'RuleHistory', 'SupplyMaps'];
+const AUTO_TABS = ['TaskReviews', 'Attachments', 'StoredFiles', 'VesselRequests', 'Rotations', 'RotationChanges', 'RotationRules', 'Handovers', 'WorkSubmissions', 'Rules', 'RuleHistory', 'SupplyMaps', 'TaskSupplies'];
 
 function sheet(name) {
   let sh = SpreadsheetApp.getActive().getSheetByName(name);
@@ -2676,7 +2681,7 @@ function deleteVessel(admin, id, confirmName) {
     invitations: deleteRowsWhere('Memberships', m => m.vesselId === id && m.status === 'invited'),
     activity: deleteRowsWhere('Audit', a => a.vesselId === id)
   };
-  ['Materials', 'Onboard', 'PurchaseLists', 'Rotations', 'RotationChanges', 'RotationRules', 'Handovers', 'WorkSubmissions'].forEach(n => { if (SHEETS[n]) counts[n.toLowerCase()] = deleteRowsWhere(n, r => r.vesselId === id && (n !== 'WorkSubmissions' || r.status === 'pending')); });
+  ['Materials', 'Onboard', 'PurchaseLists', 'Rotations', 'RotationChanges', 'RotationRules', 'Handovers', 'WorkSubmissions', 'TaskSupplies'].forEach(n => { if (SHEETS[n]) counts[n.toLowerCase()] = deleteRowsWhere(n, r => r.vesselId === id && (n !== 'WorkSubmissions' || r.status === 'pending')); });
   // crew: their time aboard ends today
   let crew = 0;
   readTable('Memberships').filter(m => m.vesselId === id && m.status === 'active').forEach(m => {
@@ -3886,7 +3891,8 @@ function suppliesForApp() {
   const st = supplySettings();
   const maps = SHEETS.SupplyMaps ? readTable('SupplyMaps').filter(m => isTrue(m.enabled))
     .map(m => ({ id: m.id, match: m.match, term: m.term, category: m.category, note: m.note, verify: isTrue(m.verify) })) : [];
-  return Object.assign({ maps }, supplyLinks(st));
+  const links = supplyLinks(st);
+  return Object.assign({ maps, tag: links.tagOn ? st.tag : '' }, links);
 }
 
 function adminSupplies() {
@@ -3959,4 +3965,55 @@ function saveSupplySettings(user, s) {
   PropertiesService.getScriptProperties().setProperty('supply_settings', JSON.stringify(st));
   audit(user.id, 'supplySettings', '', 'Tag ' + (st.tagEnabled ? 'ON' : 'off') + (st.tag ? ' (' + st.tag + ')' : ''), '');
   return adminSupplies();
+}
+
+// ── Items saved on a task ──
+// The exact product the crew found (link, part number, quantity). Stored without anyone's affiliate tag;
+// the website adds CJM's tag to Amazon links only while it is switched on.
+const SUPPLY_LINK = /^https:\/\/([a-z0-9-]+\.)*[a-z0-9-]+\.[a-z]{2,}(\/[^\s<>"]*)?$/i;
+
+function cleanSupplyUrl(u) {
+  u = String(u || '').trim();
+  if (!u) return '';
+  if (!SUPPLY_LINK.test(u) || u.length > 600) throw new Error('Paste a full https:// link to the product');
+  if (/^https:\/\/([a-z0-9-]+\.)*amazon\./i.test(u)) {
+    // keep the product address, drop tracking (someone else's tag, ref codes)
+    const m = u.match(/^(https:\/\/[^\/]+)\/(?:[^\/]+\/)?(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+    if (m) return m[1] + '/dp/' + m[2].toUpperCase();
+    return u.replace(/([?&])(tag|ref_|linkCode|linkId|ascsubtag)=[^&]*/gi, '$1').replace(/[?&]+$/, '').replace(/\?&/, '?');
+  }
+  return u;
+}
+
+function taskSupplyItems(c, taskId, names) {
+  if (!SHEETS.TaskSupplies) return [];
+  return readTable('TaskSupplies').filter(x => x.taskId === taskId && x.vesselId === c.vessel.id)
+    .map(x => ({ id: x.id, name: x.name, url: x.url, partNumber: x.partNumber, qty: x.qty, note: x.note,
+                 addedBy: (names || {})[x.addedBy] || '', addedAt: x.addedAt,
+                 canRemove: x.addedBy === c.userId || c.perms.editAll || c.perms.createRoutine }));
+}
+
+function addTaskSupply(c, user, taskId, it) {
+  const t = taskIn(c, taskId);
+  if (c.perms.viewOnly) throw new Error('View-only access cannot add items');
+  const name = clip(it.name, 120);
+  if (!name) throw new Error('Name the item');
+  const url = cleanSupplyUrl(it.url);
+  const qty = String(it.qty || '').trim();
+  if (qty && !/^\d{1,4}$/.test(qty)) throw new Error('Quantity must be a number');
+  if (readTable('TaskSupplies').filter(x => x.taskId === t.id).length >= 20) throw new Error('Up to 20 items per task');
+  insert('TaskSupplies', { id: newId('TS'), vesselId: c.vessel.id, taskId: t.id, name, url, partNumber: clip(it.partNumber, 60),
+                           qty, note: clip(it.note, 200), addedBy: user.id, addedAt: nowIso() });
+  audit(user.id, 'supplyItem', t.id, 'Saved item: ' + name + (it.partNumber ? ' (' + clip(it.partNumber, 60) + ')' : ''), c.vessel.id);
+  return { ok: true, supplyItems: taskSupplyItems(c, t.id, crewNames()) };
+}
+
+function removeTaskSupply(c, user, id) {
+  const x = readTable('TaskSupplies').find(k => k.id === id && k.vesselId === c.vessel.id);
+  if (!x) throw new Error('Item not found');
+  taskIn(c, x.taskId);
+  if (!(x.addedBy === user.id || c.perms.editAll || c.perms.createRoutine)) throw new Error('Only the person who saved it, the Captain or a department lead can remove it');
+  deleteRowsWhere('TaskSupplies', k => k.id === id);
+  audit(user.id, 'supplyItemRemoved', x.taskId, 'Removed item: ' + x.name, c.vessel.id);
+  return { ok: true, supplyItems: taskSupplyItems(c, x.taskId, crewNames()) };
 }

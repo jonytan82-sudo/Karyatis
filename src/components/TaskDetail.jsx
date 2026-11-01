@@ -95,7 +95,7 @@ export default function TaskDetail({ id, onClose, onChanged, onEdit, supplies })
       </dl>
 
       {t.description && <p className="desc"><Linkify text={t.description} /></p>}
-      <PurchaseSupplies task={t} supplies={supplies} />
+      <PurchaseSupplies task={t} supplies={supplies} saved={data.supplyItems} canAdd />
       {t.resolution && <div className="resolution"><b>Resolution</b><p><Linkify text={t.resolution} /></p></div>}
 
       {error && <div className="alert">{error}</div>}

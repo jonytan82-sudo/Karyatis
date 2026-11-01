@@ -1123,3 +1123,12 @@ details.group[open] > summary h3::after { content: ' ▾'; }
 .supply-tag.on { border-left-color: var(--green); }
 .supply-tag label, .supply-map-form label { display: flex; flex-direction: column; gap: 0.25rem; }
 .supply-maps li .supply-map-form { width: 100%; }
+.supply-saved { list-style: none; margin: 0; padding: 0; width: 100%; display: flex; flex-direction: column; gap: 0.4rem; }
+.supply-saved li { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; background: var(--paper); border: 1px solid var(--line); border-radius: 6px; padding: 0.5rem 0.65rem; }
+.ss-main { display: flex; flex-direction: column; min-width: 0; }
+.ss-main small { color: var(--muted); overflow-wrap: anywhere; }
+.ss-actions { display: flex; gap: 0.5rem; align-items: center; flex: none; }
+.supply-sugs { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.supply-sug { background: var(--paper); border: 1px solid var(--brass); border-radius: 999px; padding: 0.4rem 0.8rem; text-decoration: none; color: var(--ink); font-weight: 600; font-size: 0.92rem; }
+.supply-panel .supply-search { max-width: none; }
+.supply-add { width: 100%; background: var(--paper); border: 1px solid var(--line); border-radius: 6px; padding: 0.75rem; }

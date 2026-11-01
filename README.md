@@ -68,6 +68,17 @@ React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
 5. Web addresses typed or pasted in notes, descriptions, resolutions and the activity log are clickable.
 6. CJM admin tab should show `Google Script version: 2.5 (photos and files on notes)`.
 
+## Upgrade to 3.6 (suggested and saved supply items)
+Paste Code.gs → save → Manage deployments → pencil → New version → Deploy, then upload this folder to GitHub (TaskSupplies tab is created on its own).
+- **Purchase supplies** now shows on every task. It suggests up to 3 items from the task's title and description (admin search first,
+  then built-in rules, e.g. generator oil service → oil filter, engine oil, drain plug gasket). When the task names the equipment
+  (Caterpillar C18, Kohler 20EFOZ, MTU 16V2000…), the make and model are added to the part itself. Jobs with nothing to buy
+  (drills, surveys, radio and radar checks) get no made-up suggestion, just a search box.
+- **Saved items**: crew paste the exact product link with name, part number, quantity and a note. It stays on the task and shows first every
+  time a recurring task comes due. Amazon links are stored clean (other people's tags removed) and get CJM's tag only while it is switched on;
+  other suppliers' links stay as pasted. The person who saved it, the Captain or a department lead can remove it.
+- The suggestion rules live in `src/supplies.js`.
+
 ## Upgrade to 3.5 (marine supplies links)
 Paste Code.gs → save → Manage deployments → pencil → New version → Deploy, then upload this folder to GitHub.
 1. CJM admin → **Marine supplies** → **Load the starter list** (23 task-to-search lines). Edit, add, turn off or remove any line; changes show
