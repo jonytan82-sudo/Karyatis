@@ -14,7 +14,7 @@
  *                body: JSON.stringify({ action, token, vesselId, ... }) })
  */
 
-const SCRIPT_VERSION = '3.1.1 (job answers shown in the app)';
+const SCRIPT_VERSION = '3.3 (flag, charter and class in the starter program)';
 
 // ───────────────────────── CONFIG ─────────────────────────
 const CONFIG = {
@@ -46,7 +46,7 @@ const SHEETS = {
   Profiles:    ['userId', 'photo', 'headline', 'bio', 'location', 'yearsExperience', 'availability',
                 'phone', 'showContact', 'languages', 'certifications', 'experience', 'updatedAt',
                 'shareReviews', 'shareId', 'operatingArea'],
-  Vessels:     ['id', 'name', 'type', 'length', 'homePort', 'active', 'createdAt', 'createdBy', 'deletedAt'],
+  Vessels:     ['id', 'name', 'type', 'length', 'homePort', 'active', 'createdAt', 'createdBy', 'deletedAt', 'flag', 'usage', 'classSociety'],
   VesselRequests: ['id', 'userId', 'name', 'type', 'length', 'homePort', 'role', 'message', 'status',
                    'createdAt', 'handledBy', 'handledAt', 'vesselId', 'note'],
   // Rotation & handover
@@ -353,6 +353,7 @@ function doPost(e) {
       calendar:       () => calendar(V(), req.from, req.to),
       getTask:        () => getTask(V(), user, req.id),
       createTask:     () => withLock(() => createTask(V(), user, req.task || {})),
+      addStarterTasks: () => withLock(() => addStarterTasks(V(), user, req.tasks, req.rules)),
       updateTask:     () => withLock(() => updateTask(V(), user, req.id, req.task || {})),
       completeTask:   () => withLock(() => completeTask(V(), user, req)),
       addNote:        () => withLock(() => addNote(V(), user, req.taskId, req.text, req.files)),
@@ -685,7 +686,8 @@ function bootstrap(user, vesselId) {
   if (pick) {
     try {
       const c = vesselCtx(user, pick);
-      out.vessel = { id: c.vessel.id, name: c.vessel.name, type: c.vessel.type, length: c.vessel.length, homePort: c.vessel.homePort };
+      out.vessel = { id: c.vessel.id, name: c.vessel.name, type: c.vessel.type, length: c.vessel.length, homePort: c.vessel.homePort,
+                     flag: c.vessel.flag || '', usage: c.vessel.usage || '', classSociety: c.vessel.classSociety || '' };
       out.position = c.position;
       out.perms = c.perms;
       out.tasks = listTasks(c, user);
@@ -2151,7 +2153,8 @@ function readSheetRows(sh) {
     const o = { _row: i + 2 };
     headers.forEach((h, j) => {
       const v = r[j];
-      o[h] = v == null ? '' : v instanceof Date ? Utilities.formatDate(v, tz(), 'yyyy-MM-dd') : String(v);
+      // Google Sheets turns a typed time like 12:30 into a date in 1899; read it back as the time.
+      o[h] = v == null ? '' : v instanceof Date ? Utilities.formatDate(v, tz(), v.getFullYear() < 1901 ? 'HH:mm' : 'yyyy-MM-dd') : String(v);
     });
     return o;
   });
@@ -2165,6 +2168,15 @@ function readTable(name) {
 function insert(name, obj) {
   delete TABLE_CACHE[name];
   sheet(name).appendRow(SHEETS[name].map(h => obj[h] === undefined || obj[h] === null ? '' : String(obj[h])));
+}
+
+/** Adds many rows in one write (much faster than one appendRow per row). */
+function insertMany(name, objs) {
+  if (!objs.length) return;
+  delete TABLE_CACHE[name];
+  const sh = sheet(name), cols = SHEETS[name];
+  sh.getRange(sh.getLastRow() + 1, 1, objs.length, cols.length)
+    .setValues(objs.map(o => cols.map(h => o[h] === undefined || o[h] === null ? '' : String(o[h]))));
 }
 
 function update(name, row, obj) {
@@ -2725,7 +2737,8 @@ function importVessel(admin, pkg) {
   else mode = old ? 'restore' : 'new';
   if (nameTaken(name)) name = name + ' (restored ' + today() + ')';
   const vrow = { id: vid, name, type: clip(pkg.vessel.type, 60), length: clip(pkg.vessel.length, 20), homePort: clip(pkg.vessel.homePort, 80),
-                 active: 'TRUE', createdAt: pkg.vessel.createdAt || nowIso(), createdBy: pkg.vessel.createdBy || admin.id, deletedAt: '' };
+                 active: 'TRUE', createdAt: pkg.vessel.createdAt || nowIso(), createdBy: pkg.vessel.createdBy || admin.id, deletedAt: '',
+                 flag: clip(pkg.vessel.flag, 60), usage: USAGES.indexOf(pkg.vessel.usage) !== -1 ? pkg.vessel.usage : '', classSociety: clip(pkg.vessel.classSociety, 60) };
   if (mode === 'restore') update('Vessels', old._row, Object.assign(old, vrow)); else insert('Vessels', vrow);
 
   // people: same account (by id and email), else same email, else a new account without a password
@@ -3550,4 +3563,52 @@ function addDemoWorkRequests_(v, deck, stew) {
   insert('WorkSubmissions', Object.assign({}, base, { id: newId('J'), kind: 'done', userId: stew, title: 'Descaled the crew mess coffee machine',
     system: 'Galley', description: 'Was tripping the breaker. Descaled and cleaned the group head; working normally now.',
     performedDate: addInterval(today(), -1, 'days'), dueDate: '', recurring: 'FALSE', intervalValue: '', intervalUnit: '', wantScore: 'TRUE' }));
+}
+
+
+// ═════════════════════════ STARTER MAINTENANCE PROGRAM ═════════════════════════
+// The website holds the list of common jobs (src/jobLibrary.js). The Captain or a department lead ticks the ones
+// that fit the boat and they are added here in one go, as recurring routine tasks with spread-out first due dates.
+const STARTER_MAX = 250;
+
+function addStarterTasks(c, user, list, rules) {
+  if (!c.perms.createRoutine) throw new Error('Only the Captain or a department lead can load a maintenance program');
+  if (rules) saveVesselRules(c, user, rules);
+  if (!Array.isArray(list) || !list.length) throw new Error('Choose at least one job');
+  if (list.length > STARTER_MAX) throw new Error('Add up to ' + STARTER_MAX + ' jobs at a time');
+  const have = {};
+  vesselTasks(c).filter(t => t.state === 'Open').forEach(t => have[String(t.title).trim().toLowerCase()] = 1);
+  const now = nowIso(), rows = [];
+  let skipped = 0;
+  list.forEach(t => {
+    const title = clip(t.title, 200);
+    if (!title) return;
+    const key = title.toLowerCase();
+    if (have[key]) { skipped++; return; }
+    have[key] = 1;
+    validateInterval(t.intervalValue, t.intervalUnit);
+    validateDate(t.dueDate);
+    if (c.perms.depts !== 'all' && !inMyDept(c, { system: t.system })) { skipped++; return; } // leads: own departments only
+    rows.push({ id: newId('T'), title, description: clip(t.description, 3000), system: clip(t.system, 60), type: 'Routine',
+      dueDate: t.dueDate, dueTime: '', recurring: 'TRUE', intervalValue: String(t.intervalValue), intervalUnit: String(t.intervalUnit),
+      assignedTo: '', state: 'Open', createdBy: user.id, createdAt: now, lastPerformed: '', lastPerformedBy: '',
+      resolution: '', reminderLog: '', vesselId: c.vessel.id });
+  });
+  insertMany('Tasks', rows);
+  audit(user.id, 'starterProgram', '', rows.length + ' routine tasks added from the starter list' + (skipped ? ' (' + skipped + ' skipped)' : ''), c.vessel.id);
+  return { ok: true, added: rows.length, skipped,
+           message: rows.length + ' routine task' + (rows.length === 1 ? '' : 's') + ' added' + (skipped ? '. ' + skipped + ' skipped (already in the list' + (c.perms.depts !== 'all' ? ' or outside your departments' : '') + ').' : '.'),
+           tasks: listTasks(c, user) };
+}
+
+
+/** Flag state, private or charter use, and class society: they decide which safety and survey items apply. */
+const USAGES = ['private', 'charter'];
+function saveVesselRules(c, user, r) {
+  const v = readTable('Vessels').find(x => x.id === c.vessel.id);
+  const flag = clip(r.flag, 60), usage = USAGES.indexOf(r.usage) !== -1 ? r.usage : '', cls = clip(r.classSociety, 60);
+  if (v.flag === flag && v.usage === usage && v.classSociety === cls) return;
+  v.flag = flag; v.usage = usage; v.classSociety = cls;
+  update('Vessels', v._row, v);
+  audit(user.id, 'vesselRules', '', [flag || 'flag not set', usage || 'use not set', cls || 'not classed'].join(', '), c.vessel.id);
 }

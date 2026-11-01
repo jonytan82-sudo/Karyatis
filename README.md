@@ -68,6 +68,25 @@ React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
 5. Web addresses typed or pasted in notes, descriptions, resolutions and the activity log are clickable.
 6. CJM admin tab should show `Google Script version: 2.5 (photos and files on notes)`.
 
+## Upgrade to 3.3 (flag, charter and class in the starter program)
+Paste Code.gs → save → Manage deployments → pencil → New version → Deploy, then upload this folder to GitHub.
+- The starter program also asks the flag state, private or charter use, and class society (saved on the boat; Vessels gets three columns on its own).
+- Charter/commercial yachts get flag survey, weekly lifesaving inspection, GMDSS radio survey, ISM audit (large yachts) and record-book jobs.
+  Classed yachts get class annual and renewal surveys, tailshaft and bottom surveys.
+- Jobs whose interval is usually set by the flag state or class society are tagged FLAG or CLASS, and their description says to match the survey schedule.
+- These are general guidance drafted from industry practice, not the text of any code; check with the flag administration and class society.
+
+## Upgrade to 3.2 (common jobs and starter program)
+Paste Code.gs → save → Manage deployments → pencil → New version → Deploy, then upload this folder to GitHub.
+- **New task → Common job**: about 120 routine jobs grouped by system. Picking one fills the title, system, notes and a suggested
+  interval; "Custom task" is still there. Department leads see their own departments' systems.
+- **Starter maintenance program**: on the Board of a boat with fewer than 10 routine tasks (and in All tasks at any time), the Captain
+  or a department lead picks the size band and what is aboard (stabilizers, watermaker, tender…), reviews the suggested jobs and adds the
+  ticked ones in one go. First due dates are spread over the next weeks. Jobs whose exact title is already in the list are skipped.
+- The job list lives in `src/jobLibrary.js`. Intervals are general practice, not manufacturer, flag or class requirements;
+  every task created from it says so. Edit that file to change the list.
+- Fix: due times no longer show as "1899-12-30".
+
 ## Upgrade to 3.1.1 (job answers shown in the app)
 Paste Code.gs → save → Manage deployments → pencil → New version → Deploy, then upload this folder to GitHub.
 - When a Captain or Owner answers a job, the sender sees a notice and a badge on My profile at their next login (not only the email).

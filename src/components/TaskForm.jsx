@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import Modal from './Modal.jsx';
 import { call } from '../api.js';
-import { SYSTEMS } from '../util.js';
+import { SYSTEMS, todayISO } from '../util.js';
+import { JOBS, everyLabel, jobAllowed, jobDescription } from '../jobLibrary.js';
 
 const BLANK = {
   title: '', type: 'Routine', system: '', description: '', dueDate: '', dueTime: '',
@@ -18,6 +19,16 @@ export default function TaskForm({ initial, crew, perms, onClose, onSaved }) {
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
   const isIssue = f.type === 'Issue';
+  const [jobId, setJobId] = useState('');
+  const commonJobs = JOBS.filter((j) => (!f.system || j.system === f.system) && jobAllowed(perms, j.system));
+  const jobGroups = commonJobs.reduce((g, j) => { (g[j.system] = g[j.system] || []).push(j); return g; }, {});
+  function pickJob(id) {
+    setJobId(id);
+    const j = JOBS.find((x) => x.id === id);
+    if (!j) { setF({ ...f, title: '', description: '', recurring: false, intervalValue: '' }); return; }
+    setF({ ...f, title: j.title, system: j.system, description: jobDescription(j), recurring: true,
+      intervalValue: String(j.every), intervalUnit: j.unit, dueDate: f.dueDate || todayISO() });
+  }
 
   async function save(e) {
     e.preventDefault();
@@ -54,6 +65,20 @@ export default function TaskForm({ initial, crew, perms, onClose, onSaved }) {
               Report an issue
             </button>
           </div>
+        )}
+
+        {!editing && canSchedule && !isIssue && (
+          <label>Common job
+            <select value={jobId} onChange={(e) => pickJob(e.target.value)} className="job-pick">
+              <option value="">Custom task (type your own)</option>
+              {Object.entries(jobGroups).map(([sys, list]) => (
+                <optgroup key={sys} label={sys}>
+                  {list.map((j) => <option key={j.id} value={j.id}>{j.title} ({everyLabel(j).toLowerCase()}){j.regulated ? `, ${j.regulated} rules` : ''}</option>)}
+                </optgroup>
+              ))}
+            </select>
+            {jobId && <small className="hint">Suggested interval. Change anything below to match your manuals{(JOBS.find((x) => x.id === jobId) || {}).regulated ? ' and your flag or class requirements' : ''}.</small>}
+          </label>
         )}
 
         <label>Title

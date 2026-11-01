@@ -20,6 +20,7 @@ import Rotation from './components/Rotation.jsx';
 import Landing from './components/Landing.jsx';
 import SubmitWork from './components/SubmitWork.jsx';
 import ExternalReview from './components/ExternalReview.jsx';
+import StarterProgram from './components/StarterProgram.jsx';
 
 const REVIEW_TOKEN = new URLSearchParams(window.location.search).get('w') || '';
 
@@ -50,6 +51,7 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false);
   const [sentMsg, setSentMsg] = useState('');
   const [profileSub, setProfileSub] = useState('');
+  const [starter, setStarter] = useState(false);
   const phone = usePhone();
   const [home, setHome] = useState(true); // phone: showing the menu screen
 
@@ -191,9 +193,9 @@ export default function App() {
 
   const content = (
     <>
-      {tab === 'board' && vessel && <Board tasks={s.tasks || []} onOpen={setOpenId} />}
+      {tab === 'board' && vessel && <Board tasks={s.tasks || []} onOpen={setOpenId} onStarter={perms.createRoutine ? () => setStarter(true) : null} />}
       {tab === 'calendar' && vessel && <Calendar version={version} onOpen={setOpenId} />}
-      {tab === 'tasks' && vessel && <TaskList tasks={s.tasks || []} onOpen={setOpenId} />}
+      {tab === 'tasks' && vessel && <TaskList tasks={s.tasks || []} onOpen={setOpenId} onStarter={perms.createRoutine ? () => setStarter(true) : null} />}
       {tab === 'rotation' && vessel && !perms.contractor && <Rotation user={user} onOpenTask={setOpenId} />}
       {tab === 'reviews' && vessel && s.canReviewWork && <WorkReviews vessel={vessel} onChanged={refresh} />}
       {tab === 'crew' && vessel && !perms.contractor && (
@@ -216,6 +218,10 @@ export default function App() {
           onChanged={refresh}
           onEdit={(t) => { setOpenId(null); setEditing(t); }}
         />
+      )}
+      {starter && vessel && (
+        <StarterProgram vessel={vessel} tasks={s.tasks || []} perms={perms} onClose={() => setStarter(false)}
+          onDone={(m) => { setStarter(false); setSentMsg(m); refresh(); }} />
       )}
       {submitting && (
         <SubmitWork vessel={vessel} kinds={vessel && s.canSubmitWork ? ['done', 'suggest', 'external'] : ['external']}

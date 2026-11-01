@@ -9,7 +9,7 @@ function Group({ title, items, onOpen, empty }) {
   );
 }
 
-export default function Board({ tasks, onOpen }) {
+export default function Board({ tasks, onOpen, onStarter }) {
   const open = tasks.filter((t) => t.state === 'Open');
   const routine = open.filter((t) => t.type === 'Routine');
   const red = open.filter((t) => t.color === 'red');
@@ -19,6 +19,15 @@ export default function Board({ tasks, onOpen }) {
 
   return (
     <div className="board">
+      {onStarter && routine.length < 10 && (
+        <div className="starter-card card">
+          <div>
+            <b>New boat? Load a starter maintenance program</b>
+            <p className="hint">Pick the boat's size and what is aboard, and CJM Marine suggests routine jobs with typical intervals. You choose which to add.</p>
+          </div>
+          <button className="btn primary" onClick={onStarter}>Load starter program</button>
+        </div>
+      )}
       <div className="gauge">
         <div className="gauge-cell red"><b>{red.length}</b><span>Overdue</span></div>
         <div className="gauge-cell amber"><b>{amber.length}</b><span>Due within 10 days</span></div>
