@@ -1,3 +1,5 @@
+import BasisChip from './BasisChip.jsx';
+import { PurchaseSupplies } from './Supplies.jsx';
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import Modal from './Modal.jsx';
 import { call } from '../api.js';
@@ -6,7 +8,7 @@ import { AttachmentList } from './Attachments.jsx';
 import { ACCEPT, MAX_FILES, prepareFile } from '../files.js';
 import { STATUS, dueText, everyText, fmtDate, fmtStamp, todayISO } from '../util.js';
 
-export default function TaskDetail({ id, onClose, onChanged, onEdit }) {
+export default function TaskDetail({ id, onClose, onChanged, onEdit, supplies }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
@@ -86,12 +88,14 @@ export default function TaskDetail({ id, onClose, onChanged, onEdit }) {
         {t.system && <div><dt>System</dt><dd>{t.system}</dd></div>}
         {t.dueDate && <div><dt>Due</dt><dd>{fmtDate(t.dueDate)}{t.dueTime && `, ${t.dueTime}`}</dd></div>}
         {!isIssue && <div><dt>Schedule</dt><dd>{everyText(t)}</dd></div>}
+        {t.basis && <div><dt>Basis</dt><dd><BasisChip basis={t.basis} authority={t.authority} />{t.basis === 'recommended' && ' CJM suggestion, not a legal requirement'}</dd></div>}
         <div><dt>Assigned to</dt><dd>{t.assignedToName || 'Anyone'}</dd></div>
         <div><dt>Created</dt><dd>{t.createdByName}, {fmtStamp(t.createdAt)}</dd></div>
         {t.lastPerformed && <div><dt>Last done</dt><dd>{fmtDate(t.lastPerformed)} by {t.lastPerformedByName}</dd></div>}
       </dl>
 
       {t.description && <p className="desc"><Linkify text={t.description} /></p>}
+      <PurchaseSupplies task={t} supplies={supplies} />
       {t.resolution && <div className="resolution"><b>Resolution</b><p><Linkify text={t.resolution} /></p></div>}
 
       {error && <div className="alert">{error}</div>}

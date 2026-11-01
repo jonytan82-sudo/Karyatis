@@ -2,14 +2,15 @@ import { useState } from 'react';
 import Modal from './Modal.jsx';
 import { call } from '../api.js';
 import { SYSTEMS, todayISO } from '../util.js';
-import { JOBS, everyLabel, jobAllowed, jobDescription } from '../jobLibrary.js';
+import { JOBS, everyLabel, jobAllowed, jobDescription, withRule } from '../jobLibrary.js';
+import BasisChip from './BasisChip.jsx';
 
 const BLANK = {
   title: '', type: 'Routine', system: '', description: '', dueDate: '', dueTime: '',
   recurring: false, intervalValue: '', intervalUnit: 'months', assignedTo: '', note: '',
 };
 
-export default function TaskForm({ initial, crew, perms, onClose, onSaved }) {
+export default function TaskForm({ initial, crew, perms, rules, onClose, onSaved }) {
   const editing = !!initial;
   const canSchedule = perms.createRoutine;
   const [f, setF] = useState(() => (initial
@@ -20,12 +21,14 @@ export default function TaskForm({ initial, crew, perms, onClose, onSaved }) {
   const set = (k) => (e) => setF({ ...f, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value });
   const isIssue = f.type === 'Issue';
   const [jobId, setJobId] = useState('');
-  const commonJobs = JOBS.filter((j) => (!f.system || j.system === f.system) && jobAllowed(perms, j.system));
+  const [basis, setBasis] = useState('');
+  const commonJobs = JOBS.map((j) => withRule(j, rules)).filter((j) => j && (!f.system || j.system === f.system) && jobAllowed(perms, j.system));
   const jobGroups = commonJobs.reduce((g, j) => { (g[j.system] = g[j.system] || []).push(j); return g; }, {});
   function pickJob(id) {
     setJobId(id);
-    const j = JOBS.find((x) => x.id === id);
-    if (!j) { setF({ ...f, title: '', description: '', recurring: false, intervalValue: '' }); return; }
+    const j = commonJobs.find((x) => x.id === id);
+    if (!j) { setBasis(''); setF({ ...f, title: '', description: '', recurring: false, intervalValue: '' }); return; }
+    setBasis(j.basis);
     setF({ ...f, title: j.title, system: j.system, description: jobDescription(j), recurring: true,
       intervalValue: String(j.every), intervalUnit: j.unit, dueDate: f.dueDate || todayISO() });
   }
@@ -44,7 +47,7 @@ export default function TaskForm({ initial, crew, perms, onClose, onSaved }) {
       };
       const r = editing
         ? await call('updateTask', { id: initial.id, task })
-        : await call('createTask', { task: { ...task, type: f.type, note: f.note } });
+        : await call('createTask', { task: { ...task, type: f.type, note: f.note, ...(jobId ? { ruleId: (commonJobs.find((x) => x.id === jobId) || {}).ruleId, basis: 'recommended' } : { basis }) } });
       onSaved(r.task);
     } catch (err) {
       setError(err.message);
@@ -73,11 +76,22 @@ export default function TaskForm({ initial, crew, perms, onClose, onSaved }) {
               <option value="">Custom task (type your own)</option>
               {Object.entries(jobGroups).map(([sys, list]) => (
                 <optgroup key={sys} label={sys}>
-                  {list.map((j) => <option key={j.id} value={j.id}>{j.title} ({everyLabel(j).toLowerCase()}){j.regulated ? `, ${j.regulated} rules` : ''}</option>)}
+                  {list.map((j) => <option key={j.id} value={j.id}>{j.title} ({everyLabel(j).toLowerCase()}){j.basis === 'regulatory' ? ', regulatory' : ''}</option>)}
                 </optgroup>
               ))}
             </select>
-            {jobId && <small className="hint">Suggested interval. Change anything below to match your manuals{(JOBS.find((x) => x.id === jobId) || {}).regulated ? ' and your flag or class requirements' : ''}.</small>}
+            {jobId && <small className="hint"><BasisChip basis={basis} authority={(commonJobs.find((x) => x.id === jobId) || {}).authority} /> {basis === 'regulatory' ? 'Confirmed by the CJM compliance consultant.' : 'CJM Marine suggestion, not a legal requirement. Change anything below to match your manuals.'}</small>}
+          </label>
+        )}
+
+        {!editing && canSchedule && !isIssue && !jobId && (
+          <label>Source of this task
+            <select value={basis} onChange={(e) => setBasis(e.target.value)}>
+              <option value="">Our own task</option>
+              <option value="manufacturer">Manufacturer's manual</option>
+              <option value="recommended">CJM recommendation</option>
+            </select>
+            <small className="hint">Regulatory labels come only from rules confirmed by the CJM compliance consultant.</small>
           </label>
         )}
 

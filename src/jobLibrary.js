@@ -220,13 +220,14 @@ export const JOBS = J.map(([system, title, every, unit, notes, sizes, equipment,
   id: `j${i}`, system, title, every, unit, notes, sizes, equipment, regulated,
 }));
 
-export const DISCLAIMER = 'Suggested interval from the CJM Marine starter list (general practice). Follow the manufacturer\'s manual and your flag or class rules where they differ.';
+export const DISCLAIMER = 'Recommended by CJM Marine (general practice, not a legal requirement). Follow the manufacturer\'s manual and your flag, state or class rules where they differ.';
+export const CONSULTANT_NOTE = 'Everything is labelled Recommended until a marine compliance consultant confirms it. CJM Marine is working with a consultant to confirm flag, state and class requirements.';
 
 export const REG_NOTE = {
-  flag: 'Usually set by your flag state (and the yacht code for charter yachts). Match the interval to your flag requirements.',
-  class: 'Usually set by your class society. Match the interval to your class survey schedule.',
+  flag: 'This may be set by your flag state (and the yacht code for charter yachts). Under consultant review; check your flag requirements.',
+  class: 'This may be set by your class society. Under consultant review; check your class survey schedule.',
 };
-export const REG_TAG = { flag: 'Flag', class: 'Class' };
+export const REG_TAG = { flag: 'Check flag', class: 'Check class' };
 
 export const jobDescription = (j) => [j.notes, REG_NOTE[j.regulated], DISCLAIMER].filter(Boolean).join('\n\n');
 
@@ -257,3 +258,74 @@ export function jobAllowed(perms, system) {
   const d = SYSTEM_DEPT[system] || 'any';
   return d === 'any' ? perms.depts.length > 0 : perms.depts.includes(d);
 }
+
+
+// ── Rules: labels, consultant review and applicability ──
+export const slug = (t) => String(t).toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80);
+export const ruleIdOf = (j) => `cjm-${slug(j.title)}`;
+
+export const BASIS = {
+  recommended: { label: 'Recommended', cls: 'b-rec' },
+  manufacturer: { label: 'Manufacturer', cls: 'b-oem' },
+  regulatory: { label: 'Regulatory', cls: 'b-reg' },
+};
+export const AUTHORITIES = { cjm: 'CJM Marine', oem: 'Manufacturer', flag: 'Flag', class: 'Class', state: 'State', uscg: 'USCG', other: 'Other' };
+
+/** Draft rule record for the consultant, from a library job. Proposed values only; nothing is approved here. */
+export const toRule = (j) => ({
+  id: ruleIdOf(j), title: j.title, system: j.system,
+  basis: j.regulated ? 'regulatory' : 'recommended', authority: j.regulated || 'cjm',
+  jurisdiction: j.regulated ? 'To be confirmed by the consultant' : '',
+  source: '', sourceRef: '', edition: '',
+  appliesFlags: '', appliesUsage: j.equipment === 'charter' ? 'charter,passenger' : '', classed: j.equipment === 'classed' ? 'yes' : '',
+  minLength: '', maxLength: '', minGT: '', maxGT: '', minPassengers: '', maxPassengers: '', area: '',
+  every: j.every, unit: j.unit, performer: '', proof: '', exceptions: '',
+  notes: [j.notes, j.equipment && !['charter', 'classed'].includes(j.equipment) ? `Only when aboard: ${j.equipment}` : ''].filter(Boolean).join(' '),
+});
+
+/** Effective view of a job given the reviewed rules from the server. */
+export function withRule(j, rules) {
+  const r = (rules || []).find((x) => x.id === ruleIdOf(j));
+  if (r && r.status === 'rejected') return null;
+  if (r && r.status === 'approved') {
+    return { ...j, ruleId: r.id, basis: r.basis || 'recommended', authority: r.authority || '', every: Number(r.every) || j.every, unit: r.unit || j.unit,
+      title: r.title || j.title, source: r.source, sourceRef: r.sourceRef, rule: r };
+  }
+  return { ...j, ruleId: ruleIdOf(j), basis: 'recommended', authority: 'cjm' };
+}
+
+const metres = (len) => {
+  const m = String(len || '').toLowerCase().match(/([\d.]+)\s*(m|meter|metre|ft|feet|')?/);
+  if (!m) return null;
+  let v = Number(m[1]);
+  if (m[2] === 'ft' || m[2] === 'feet' || m[2] === "'" || (!m[2] && v > 60)) v *= 0.3048;
+  return v;
+};
+const known = (v) => v !== '' && v !== undefined && v !== null && String(v).toLowerCase() !== 'unknown';
+
+/** Does an approved rule apply to this boat? 'yes' | 'no' | 'unknown' (a needed detail is missing). */
+export function applies(rule, v) {
+  if (!rule) return 'yes';
+  let unknown = false;
+  const need = (val, test) => { if (!known(val)) { unknown = true; return true; } return test(val); };
+  const list = (s) => String(s || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+  if (list(rule.appliesFlags).length && !need(v.flag, (f) => list(rule.appliesFlags).some((x) => f.toLowerCase().includes(x)))) return 'no';
+  if (list(rule.appliesUsage).length && !need(v.usage, (u) => list(rule.appliesUsage).includes(u))) return 'no';
+  const len = metres(v.loadLineLength) ?? metres(v.length);
+  if (known(rule.minLength) && !need(len, (x) => x >= Number(rule.minLength))) return 'no';
+  if (known(rule.maxLength) && !need(len, (x) => x <= Number(rule.maxLength))) return 'no';
+  if (known(rule.minGT) && !need(v.gt, (x) => Number(x) >= Number(rule.minGT))) return 'no';
+  if (known(rule.maxGT) && !need(v.gt, (x) => Number(x) <= Number(rule.maxGT))) return 'no';
+  if (known(rule.minPassengers) && !need(v.maxPassengers, (x) => Number(x) >= Number(rule.minPassengers))) return 'no';
+  if (known(rule.maxPassengers) && !need(v.maxPassengers, (x) => Number(x) <= Number(rule.maxPassengers))) return 'no';
+  if (rule.classed === 'yes' && !need(v.classSociety, (c) => c && c !== 'none')) return 'no';
+  if (rule.classed === 'no' && known(v.classSociety) && v.classSociety !== 'none') return 'no';
+  return unknown ? 'unknown' : 'yes';
+}
+
+/** Boat details that decide which codes apply; the ones still missing or unknown. */
+export const KEY_DETAILS = [
+  ['flag', 'flag'], ['usage', 'use (private or charter)'], ['gt', 'gross tonnage'], ['buildYear', 'build year'],
+  ['maxPassengers', 'passengers'], ['areaScope', 'operating area'], ['classSociety', 'class status'],
+];
+export const missingDetails = (v) => KEY_DETAILS.filter(([k]) => !v || !known(v[k])).map(([, label]) => label);

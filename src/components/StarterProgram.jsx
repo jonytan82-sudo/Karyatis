@@ -2,25 +2,45 @@ import { useMemo, useState } from 'react';
 import Modal from './Modal.jsx';
 import { call } from '../api.js';
 import { isoDate } from '../util.js';
-import { CLASS_SOCIETIES, DISCLAIMER, EQUIPMENT, FLAGS, JOBS, REG_TAG, SIZE_BANDS, everyLabel, intervalDays, jobAllowed, jobDescription, sizeBand } from '../jobLibrary.js';
+import { CONSULTANT_NOTE, DISCLAIMER, EQUIPMENT, JOBS, REG_TAG, SIZE_BANDS, applies, everyLabel, intervalDays, jobAllowed, jobDescription, missingDetails, sizeBand, withRule } from '../jobLibrary.js';
+import BasisChip from './BasisChip.jsx';
+import { DetailsFields, detailsOf } from './VesselDetails.jsx';
+
+/** Task description: approved rules carry their source; everything else says it is a CJM recommendation. */
+const describe = (j) => (j.rule
+  ? [j.notes, j.source && `Source: ${j.source}${j.sourceRef ? `, ${j.sourceRef}` : ''}${j.rule.edition ? ` (${j.rule.edition})` : ''}`,
+    j.rule.performer && `Performed by: ${j.rule.performer}`, j.rule.proof && `Proof: ${j.rule.proof}`, 'Reviewed by the CJM Marine compliance consultant.'].filter(Boolean).join('\n\n')
+  : jobDescription(j));
 
 const inDays = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return isoDate(d); };
+/** One full interval from today (e.g. 12 months from now). */
+const afterInterval = (j) => {
+  const d = new Date();
+  if (j.unit === 'days') d.setDate(d.getDate() + j.every);
+  else if (j.unit === 'weeks') d.setDate(d.getDate() + 7 * j.every);
+  else if (j.unit === 'months') d.setMonth(d.getMonth() + j.every);
+  else d.setFullYear(d.getFullYear() + j.every);
+  return isoDate(d);
+};
 
 /** Captain (or a department lead) picks a starter list of routine jobs for the boat; only ticked jobs are added. */
-export default function StarterProgram({ vessel, tasks, perms, onClose, onDone }) {
+export default function StarterProgram({ vessel, tasks, perms, rules: reviewed, canEditBoat, onClose, onDone }) {
   const [step, setStep] = useState(1);
   const [size, setSize] = useState(sizeBand(vessel.length) || 'M');
   const [equip, setEquip] = useState({});
-  const [rules, setRules] = useState({ flag: vessel.flag || '', usage: vessel.usage || '', classSociety: vessel.classSociety || '' });
-  const has = { ...equip, charter: rules.usage === 'charter', classed: !!rules.classSociety && rules.classSociety !== 'none' };
-  const flagNote = (FLAGS.find(([f]) => f === rules.flag) || [])[1];
+  const [d, setD] = useState(() => detailsOf(vessel));
+  const has = { ...equip, charter: d.usage === 'charter' || d.usage === 'passenger', classed: !!d.classSociety && d.classSociety !== 'none' && d.classSociety !== 'unknown' };
+  const missing = missingDetails(d);
   const [picked, setPicked] = useState({});
+  const [start, setStart] = useState('spread'); // spread | today
   const [open, setOpen] = useState({});
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
   const have = useMemo(() => new Set(tasks.filter((t) => t.state === 'Open').map((t) => t.title.trim().toLowerCase())), [tasks]);
-  const available = JOBS.filter((j) => jobAllowed(perms, j.system));
+  // labels and intervals from the consultant's review; rejected rules and rules that do not apply to this boat are left out
+  const available = JOBS.filter((j) => jobAllowed(perms, j.system)).map((j) => withRule(j, reviewed)).filter(Boolean)
+    .map((j) => ({ ...j, fit: applies(j.rule, d) })).filter((j) => j.fit !== 'no');
   const suggested = (j) => j.sizes.includes(size) && (!j.equipment || has[j.equipment]) && !have.has(j.title.toLowerCase());
   const shown = available.filter((j) => !j.equipment || has[j.equipment]);
   const groups = useMemo(() => {
@@ -30,7 +50,11 @@ export default function StarterProgram({ vessel, tasks, perms, onClose, onDone }
   }, [shown]); // eslint-disable-line react-hooks/exhaustive-deps
   const count = Object.values(picked).filter(Boolean).length;
 
-  function toList() {
+  async function toList() {
+    setError('');
+    if (canEditBoat) {
+      try { await call('saveVesselDetails', { details: d }); } catch (e) { setError(e.message); return; }
+    }
     const p = {};
     shown.forEach((j) => { if (suggested(j)) p[j.id] = true; });
     setPicked(p);
@@ -43,10 +67,10 @@ export default function StarterProgram({ vessel, tasks, perms, onClose, onDone }
       const chosen = shown.filter((j) => picked[j.id]);
       // spread the first due dates so the board does not turn red on day one
       const list = chosen.map((j, i) => ({
-        title: j.title, system: j.system, description: jobDescription(j), intervalValue: j.every, intervalUnit: j.unit,
-        dueDate: inDays(3 + ((i * 2) % Math.max(7, Math.min(intervalDays(j), 90)))),
+        title: j.title, system: j.system, description: describe(j), intervalValue: j.every, intervalUnit: j.unit, ruleId: j.ruleId,
+        dueDate: start === 'today' ? afterInterval(j) : inDays(3 + ((i * 2) % Math.max(7, Math.min(intervalDays(j), 90)))),
       }));
-      const r = await call('addStarterTasks', { tasks: list, rules: { ...rules, classSociety: rules.classSociety === 'none' ? '' : rules.classSociety } });
+      const r = await call('addStarterTasks', { tasks: list, rules: canEditBoat ? undefined : { flag: d.flag, usage: d.usage, classSociety: d.classSociety } });
       onDone(r.message);
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   }
@@ -65,28 +89,9 @@ export default function StarterProgram({ vessel, tasks, perms, onClose, onDone }
             </div>
           </fieldset>
           <fieldset className="recur">
-            <legend>Registration and use</legend>
-            <p className="hint">These decide which safety and survey jobs apply. They are saved on the boat.</p>
-            <div className="two">
-              <label>Flag (country of registration)
-                <select value={rules.flag} onChange={(e) => setRules({ ...rules, flag: e.target.value })}>
-                  <option value="">Choose</option>
-                  {FLAGS.map(([f]) => <option key={f}>{f}</option>)}
-                </select>
-              </label>
-              <label>Class society
-                <select value={rules.classSociety} onChange={(e) => setRules({ ...rules, classSociety: e.target.value })}>
-                  <option value="">Choose</option>
-                  <option value="none">Not classed</option>
-                  {CLASS_SOCIETIES.map((c) => <option key={c}>{c}</option>)}
-                </select>
-              </label>
-            </div>
-            <div className="starter-sizes">
-              <label className="check"><input type="radio" name="usage" checked={rules.usage === 'private'} onChange={() => setRules({ ...rules, usage: 'private' })} /> Private use only</label>
-              <label className="check"><input type="radio" name="usage" checked={rules.usage === 'charter'} onChange={() => setRules({ ...rules, usage: 'charter' })} /> Charter or commercial</label>
-            </div>
-            {flagNote && <p className="hint">{flagNote} This is a general guide; check with your flag administration.</p>}
+            <legend>Boat details</legend>
+            <p className="hint">These decide which flag, state and class rules apply. They are saved on the boat{canEditBoat ? '' : ' (only the Captain or Owner can change most of them)'}.</p>
+            <DetailsFields value={d} onChange={setD} />
           </fieldset>
           <fieldset className="recur">
             <legend>What is aboard?</legend>
@@ -104,8 +109,20 @@ export default function StarterProgram({ vessel, tasks, perms, onClose, onDone }
       )}
       {step === 2 && (
         <div className="form starter">
-          <p className="hint">{DISCLAIMER} First due dates are spread over the next few weeks. Jobs already in your task list are left out.</p>
-          <p className="hint"><em className="reg-tag reg-flag">Flag</em> and <em className="reg-tag reg-class">Class</em> mark jobs whose interval and scope are usually set by your flag state or class society. Check those against your survey schedule first.</p>
+          <p className="hint">{CONSULTANT_NOTE} Jobs already in your task list are left out.</p>
+          {missing.length > 0 && (
+            <div className="review-note">Review required: {missing.join(', ')} {missing.length === 1 ? 'is' : 'are'} not known, so this list cannot show which regulations apply.
+              Jobs marked “confirm” need checking once the details are known.</div>
+          )}
+          <fieldset className="recur start-choice">
+            <legend>First due dates</legend>
+            <label className="check"><input type="radio" name="start" checked={start === 'spread'} onChange={() => setStart('spread')} />
+              <span><b>Spread over the next few weeks</b><small>Every job comes up soon so the crew can check it, sign it off and set the real date.</small></span></label>
+            <label className="check"><input type="radio" name="start" checked={start === 'today'} onChange={() => setStart('today')} />
+              <span><b>Start from today</b><small>Treat everything as just done: each job is first due one full interval from now (a 12-month job in a year).</small></span></label>
+          </fieldset>
+          <p className="hint"><BasisChip basis="recommended" /> CJM Marine suggestion. <BasisChip basis="regulatory" authority="flag" /> confirmed by the consultant.
+            <em className="reg-tag reg-flag">Check flag</em> <em className="reg-tag reg-class">Check class</em> may be set by your flag or class society and are still under review. {DISCLAIMER}</p>
           <div className="starter-bar">
             <button type="button" className="link" onClick={() => { const p = {}; shown.forEach((j) => { if (!have.has(j.title.toLowerCase())) p[j.id] = true; }); setPicked(p); }}>Select all</button>
             <button type="button" className="link" onClick={() => setPicked({})}>Clear</button>
@@ -123,7 +140,7 @@ export default function StarterProgram({ vessel, tasks, perms, onClose, onDone }
                         <li key={j.id} className={dup ? 'dup' : ''}>
                           <label className="check">
                             <input type="checkbox" disabled={dup} checked={!!picked[j.id]} onChange={(e) => setPicked({ ...picked, [j.id]: e.target.checked })} />
-                            <span><b>{j.title}{j.regulated && <em className={`reg-tag reg-${j.regulated}`}>{REG_TAG[j.regulated]}</em>}</b><small>{everyLabel(j)}{dup ? ', already in your list' : j.notes ? `. ${j.notes}` : ''}</small></span>
+                            <span><b>{j.title} <BasisChip basis={j.basis} authority={j.authority} pending={j.fit === 'unknown'} />{!j.rule && j.regulated && <em className={`reg-tag reg-${j.regulated}`}>{REG_TAG[j.regulated]}</em>}</b><small>{everyLabel(j)}{dup ? ', already in your list' : j.notes ? `. ${j.notes}` : ''}</small></span>
                           </label>
                         </li>
                       );

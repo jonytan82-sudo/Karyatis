@@ -1,4 +1,5 @@
 import { dueText, fmtDate } from '../util.js';
+import BasisChip from './BasisChip.jsx';
 
 export default function TaskRow({ task, onOpen }) {
   return (
@@ -7,6 +8,7 @@ export default function TaskRow({ task, onOpen }) {
         <span className="row-title">
           {task.title}
           {task.type === 'Issue' && <span className="tag">Issue</span>}
+          <BasisChip basis={task.basis} authority={task.authority} />
         </span>
         <span className="row-meta">
           {[task.system, task.assignedToName && `Assigned to ${task.assignedToName}`].filter(Boolean).join(', ')}

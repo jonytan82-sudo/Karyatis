@@ -21,11 +21,14 @@ import Landing from './components/Landing.jsx';
 import SubmitWork from './components/SubmitWork.jsx';
 import ExternalReview from './components/ExternalReview.jsx';
 import StarterProgram from './components/StarterProgram.jsx';
+import RulesReview from './components/RulesReview.jsx';
+import VesselDetails from './components/VesselDetails.jsx';
+import { SuppliesPage } from './components/Supplies.jsx';
 
 const REVIEW_TOKEN = new URLSearchParams(window.location.search).get('w') || '';
 
 const VESSEL_TABS = ['board', 'calendar', 'tasks', 'crew', 'rotation', 'reviews'];
-const ICONS = { board: 'gauge', calendar: 'calendar', tasks: 'check', crew: 'crew', rotation: 'rotation', reviews: 'star', vessels: 'yacht', profile: 'user', directory: 'search', admin: 'shield' };
+const ICONS = { supplies: 'cart', rules: 'shield', board: 'gauge', calendar: 'calendar', tasks: 'check', crew: 'crew', rotation: 'rotation', reviews: 'star', vessels: 'yacht', profile: 'user', directory: 'search', admin: 'shield' };
 const PHONE = '(max-width: 700px)';
 
 function usePhone() {
@@ -52,6 +55,7 @@ export default function App() {
   const [sentMsg, setSentMsg] = useState('');
   const [profileSub, setProfileSub] = useState('');
   const [starter, setStarter] = useState(false);
+  const [details, setDetails] = useState(false);
   const phone = usePhone();
   const [home, setHome] = useState(true); // phone: showing the menu screen
 
@@ -83,7 +87,7 @@ export default function App() {
     setError('');
     if (!keepTab) {
       const hasVessels = (r.memberships || []).length > 0 || (r.vessels || []).length > 0;
-      setTab(r.vessel ? 'board' : hasVessels ? 'vessels' : 'profile');
+      setTab(r.vessel ? 'board' : hasVessels ? 'vessels' : r.user && r.user.consultant ? 'rules' : 'profile');
       setHome(true);
     }
   }, []);
@@ -152,6 +156,8 @@ export default function App() {
   if (vessel && !perms.contractor) tabs.push(['rotation', 'Rotation']);
   if (vessel && s.canReviewWork) tabs.push(['reviews', 'Reviews']);
   if (vesselOptions.length > 1 || (!vessel && vesselOptions.length) || s.canRequestVessel) tabs.push(['vessels', 'Vessels']);
+  if (vessel || vesselOptions.length) tabs.push(['supplies', 'Marine supplies']);
+  if (user.consultant) tabs.push(['rules', 'Rules review']);
   tabs.push(['profile', 'My profile']);
   if (user.canSearch) tabs.push(['directory', 'Find crew']);
   if (user.isAdmin) tabs.push(['admin', 'CJM admin']);
@@ -193,9 +199,13 @@ export default function App() {
 
   const content = (
     <>
-      {tab === 'board' && vessel && <Board tasks={s.tasks || []} onOpen={setOpenId} onStarter={perms.createRoutine ? () => setStarter(true) : null} />}
+      {tab === 'board' && vessel && <Board tasks={s.tasks || []} onOpen={setOpenId} onStarter={perms.createRoutine ? () => setStarter(true) : null}
+        vessel={vessel} onDetails={s.canEditBoat ? () => setDetails(true) : null} />}
       {tab === 'calendar' && vessel && <Calendar version={version} onOpen={setOpenId} />}
-      {tab === 'tasks' && vessel && <TaskList tasks={s.tasks || []} onOpen={setOpenId} onStarter={perms.createRoutine ? () => setStarter(true) : null} />}
+      {tab === 'tasks' && vessel && <TaskList tasks={s.tasks || []} onOpen={setOpenId} onStarter={perms.createRoutine ? () => setStarter(true) : null}
+        onDetails={s.canEditBoat ? () => setDetails(true) : null} />}
+      {tab === 'rules' && user.consultant && <RulesReview user={user} />}
+      {tab === 'supplies' && <SuppliesPage supplies={s.supplies} />}
       {tab === 'rotation' && vessel && !perms.contractor && <Rotation user={user} onOpenTask={setOpenId} />}
       {tab === 'reviews' && vessel && s.canReviewWork && <WorkReviews vessel={vessel} onChanged={refresh} />}
       {tab === 'crew' && vessel && !perms.contractor && (
@@ -214,14 +224,18 @@ export default function App() {
       {openId && vessel && (
         <TaskDetail
           id={openId}
+          supplies={s.supplies}
           onClose={() => setOpenId(null)}
           onChanged={refresh}
           onEdit={(t) => { setOpenId(null); setEditing(t); }}
         />
       )}
       {starter && vessel && (
-        <StarterProgram vessel={vessel} tasks={s.tasks || []} perms={perms} onClose={() => setStarter(false)}
+        <StarterProgram vessel={vessel} tasks={s.tasks || []} perms={perms} rules={s.rules || []} canEditBoat={!!s.canEditBoat} onClose={() => setStarter(false)}
           onDone={(m) => { setStarter(false); setSentMsg(m); refresh(); }} />
+      )}
+      {details && vessel && (
+        <VesselDetails vessel={vessel} onClose={() => setDetails(false)} onSaved={() => { setDetails(false); setSentMsg('Boat details saved.'); refresh(); }} />
       )}
       {submitting && (
         <SubmitWork vessel={vessel} kinds={vessel && s.canSubmitWork ? ['done', 'suggest', 'external'] : ['external']}
@@ -232,6 +246,7 @@ export default function App() {
           initial={editing === 'new' ? null : editing}
           crew={crew.filter((c) => c.status === 'active')}
           perms={perms}
+          rules={s.rules || []}
           onClose={() => setEditing(null)}
           onSaved={(t) => { setEditing(null); refresh(); setOpenId(t.id); }}
         />

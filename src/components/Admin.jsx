@@ -1,12 +1,43 @@
 import { useEffect, useState } from 'react';
 import { call } from '../api.js';
 import SetupLink from './SetupLink.jsx';
+import AdminSupplies from './AdminSupplies.jsx';
 import Requests from './Requests.jsx';
 import AdminCard from './AdminCard.jsx';
 import { YachtRequestsAdmin } from './YachtRequests.jsx';
 import { DeleteVessel, UploadVessel, downloadVessel } from './VesselData.jsx';
 
 const BLANK = { name: '', type: 'Motor yacht', length: '', homePort: '', managerEmail: '', managerName: '', managerPosition: 'Captain / Master' };
+
+function Consultants({ users, busy, run }) {
+  const [f, setF] = useState({ email: '', name: '' });
+  const [made, setMade] = useState(null);
+  const list = users.filter((u) => u.consultant);
+  return (
+    <section className="group">
+      <h3>Rules consultants <span className="count">{list.length}</span></h3>
+      <p className="hint">A marine compliance consultant gets a login that shows only the Rules review screen: no boats, crew or tasks. They log in with an emailed code.</p>
+      {list.length > 0 && (
+        <ul className="crew-list">
+          {list.map((u) => (
+            <li key={u.id}><span className="crew-who"><b>{u.name}</b><small>{u.email}</small></span>
+              <button className="link danger" disabled={busy} onClick={() => run(() => call('setConsultant', { email: u.email, on: false }), `${u.name} no longer reviews rules.`)}>Remove access</button></li>
+          ))}
+        </ul>
+      )}
+      <form className="form three consultant-form" onSubmit={async (e) => {
+        e.preventDefault();
+        const r = await run(() => call('setConsultant', { email: f.email, name: f.name }));
+        if (r) { setMade(r.status === 'created' ? r : null); setF({ email: '', name: '' }); }
+      }}>
+        <label>Email<input type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} required /></label>
+        <label><span>Name <span className="opt">(new accounts)</span></span><input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></label>
+        <button className="btn primary" disabled={busy}>Give rules access</button>
+      </form>
+      {made && <SetupLink result={made} onDismiss={() => setMade(null)} />}
+    </section>
+  );
+}
 
 export default function Admin({ user, catalog, onOpenVessel, onChanged }) {
   const [data, setData] = useState(null);
@@ -159,6 +190,10 @@ export default function Admin({ user, catalog, onOpenVessel, onChanged }) {
 
       <Requests vessels={activeVessels.map((v) => ({ id: v.id, name: v.name }))} catalog={catalog} allowOversight allowCommand onChanged={() => { load(); onChanged(); }} />
 
+      <Consultants users={data.users} busy={busy} run={run} />
+
+      <AdminSupplies />
+
       <section className="group">
         <div className="group-head">
           <h3>People <span className="count">{data.users.length}</span></h3>
@@ -168,7 +203,7 @@ export default function Admin({ user, catalog, onOpenVessel, onChanged }) {
           {users.map((u) => (
             <li key={u.id} className={u.active ? '' : 'inactive'}>
               <span className="crew-who">
-                <span><b>{u.name}</b>{u.isAdmin && <span className="tag">CJM admin</span>}</span>
+                <span><b>{u.name}</b>{u.isAdmin && <span className="tag">CJM admin</span>}{u.consultant && <span className="tag">Rules consultant</span>}</span>
                 <small>{u.email}{u.needsSetup && ', has not set a password yet'}{!u.active && ', deactivated'}</small>
                 <small>{u.vessels.length ? u.vessels.join('; ') : 'No vessel'}</small>
               </span>

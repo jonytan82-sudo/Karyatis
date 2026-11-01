@@ -14,7 +14,7 @@
  *                body: JSON.stringify({ action, token, vesselId, ... }) })
  */
 
-const SCRIPT_VERSION = '3.3 (flag, charter and class in the starter program)';
+const SCRIPT_VERSION = '3.5 (marine supplies links)';
 
 // ───────────────────────── CONFIG ─────────────────────────
 const CONFIG = {
@@ -42,11 +42,12 @@ const CONFIG = {
 };
 
 const SHEETS = {
-  Users:       ['id', 'name', 'email', 'passwordHash', 'salt', 'active', 'isAdmin', 'createdAt'],
+  Users:       ['id', 'name', 'email', 'passwordHash', 'salt', 'active', 'isAdmin', 'createdAt', 'consultant'],
   Profiles:    ['userId', 'photo', 'headline', 'bio', 'location', 'yearsExperience', 'availability',
                 'phone', 'showContact', 'languages', 'certifications', 'experience', 'updatedAt',
                 'shareReviews', 'shareId', 'operatingArea'],
-  Vessels:     ['id', 'name', 'type', 'length', 'homePort', 'active', 'createdAt', 'createdBy', 'deletedAt', 'flag', 'usage', 'classSociety'],
+  Vessels:     ['id', 'name', 'type', 'length', 'homePort', 'active', 'createdAt', 'createdBy', 'deletedAt', 'flag', 'usage', 'classSociety',
+                'registry', 'gt', 'buildYear', 'conversionYear', 'loadLineLength', 'maxPassengers', 'maxCrew', 'areaScope', 'operatingArea'],
   VesselRequests: ['id', 'userId', 'name', 'type', 'length', 'homePort', 'role', 'message', 'status',
                    'createdAt', 'handledBy', 'handledAt', 'vesselId', 'note'],
   // Rotation & handover
@@ -63,7 +64,7 @@ const SHEETS = {
   Tasks:       ['id', 'title', 'description', 'system', 'type', 'dueDate', 'dueTime',
                 'recurring', 'intervalValue', 'intervalUnit', 'assignedTo', 'state',
                 'createdBy', 'createdAt', 'lastPerformed', 'lastPerformedBy',
-                'resolution', 'reminderLog', 'vesselId'],
+                'resolution', 'reminderLog', 'vesselId', 'basis', 'authority', 'ruleId'],
   Completions: ['id', 'taskId', 'dueDate', 'performedDate', 'performedBy', 'timing', 'notes', 'loggedAt'],
   Notes:       ['id', 'taskId', 'userId', 'text', 'createdAt'],
   Attachments: ['id', 'vesselId', 'taskId', 'noteId', 'fileId', 'name', 'mimeType', 'size', 'thumb', 'userId', 'createdAt'],
@@ -75,6 +76,14 @@ const SHEETS = {
                     'dueDate', 'recurring', 'intervalValue', 'intervalUnit', 'wantScore', 'contactEmail', 'contactName',
                     'token', 'tokenExpires', 'status', 'decidedBy', 'decidedLabel', 'decidedAt', 'decisionNote',
                     'score', 'reviewText', 'taskId', 'completionId', 'createdAt', 'senderSeen'],
+  // Rule records reviewed by a marine compliance consultant (see RULES below)
+  Rules:       ['id', 'title', 'system', 'basis', 'authority', 'jurisdiction', 'source', 'sourceRef', 'edition',
+                'appliesFlags', 'appliesUsage', 'minLength', 'maxLength', 'minGT', 'maxGT', 'minPassengers', 'maxPassengers', 'classed', 'area',
+                'every', 'unit', 'performer', 'proof', 'exceptions', 'notes',
+                'status', 'reviewNote', 'reviewedBy', 'reviewedAt', 'version', 'createdAt', 'updatedAt'],
+  RuleHistory: ['id', 'ruleId', 'version', 'action', 'changedBy', 'changedAt', 'note', 'snapshot'],
+  // Purchase Supplies: which tasks get a supplier search, and the search term (edited by CJM admin)
+  SupplyMaps:  ['id', 'match', 'term', 'category', 'enabled', 'note', 'verify', 'updatedBy', 'updatedAt'],
   Audit:       ['timestamp', 'userId', 'action', 'taskId', 'details', 'vesselId']
 };
 
@@ -354,6 +363,22 @@ function doPost(e) {
       getTask:        () => getTask(V(), user, req.id),
       createTask:     () => withLock(() => createTask(V(), user, req.task || {})),
       addStarterTasks: () => withLock(() => addStarterTasks(V(), user, req.tasks, req.rules)),
+      saveVesselDetails: () => withLock(() => { const c = V(); saveVesselDetails(c, user, req.details || {}); return { ok: true, vessel: vesselDetailsOf(c.vessel.id) }; }),
+
+      // rules review (marine compliance consultant, CJM admin)
+      listRules:      () => { requireConsultant(user); return listRules(); },
+      saveRule:       () => { requireConsultant(user); return withLock(() => saveRule(user, req.id, req.rule || {}, req.ruleAction, req.note)); },
+      addRule:        () => { requireConsultant(user); return withLock(() => addRule(user, req.rule || {})); },
+      ruleHistory:    () => { requireConsultant(user); return ruleHistory(req.id); },
+      seedRules:      () => { requireAdmin(user); return withLock(() => seedRules(user, req.rules)); },
+      setConsultant:  () => { requireAdmin(user); return withLock(() => setConsultant(user, req.email, req.name, req.on !== false)); },
+
+      // marine supplies links (CJM admin)
+      adminSupplies:      () => { requireAdmin(user); return adminSupplies(); },
+      saveSupplyMap:      () => { requireAdmin(user); return withLock(() => saveSupplyMap(user, req.map || {})); },
+      deleteSupplyMap:    () => { requireAdmin(user); return withLock(() => deleteSupplyMap(user, req.id)); },
+      loadSupplyDefaults: () => { requireAdmin(user); return withLock(() => loadSupplyDefaults(user, req.maps)); },
+      saveSupplySettings: () => { requireAdmin(user); return withLock(() => saveSupplySettings(user, req.settings || {})); },
       updateTask:     () => withLock(() => updateTask(V(), user, req.id, req.task || {})),
       completeTask:   () => withLock(() => completeTask(V(), user, req)),
       addNote:        () => withLock(() => addNote(V(), user, req.taskId, req.text, req.files)),
@@ -447,7 +472,7 @@ function finishLogin(user, vesselId) {
 /** CJM admins, captains (Command) and owners (Owner oversight) confirm every login with an emailed code. */
 function needsLoginCode(user) {
   if (isDemoEmail(user.email)) return false; // demo/test accounts cannot receive email
-  if (isTrue(user.isAdmin)) return true;
+  if (isTrue(user.isAdmin) || isTrue(user.consultant)) return true;
   return readTable('Memberships').some(m => m.userId === user.id && m.status === 'active' &&
                                              ['command', 'oversight'].indexOf(roleOf(m).access) !== -1);
 }
@@ -676,6 +701,7 @@ function bootstrap(user, vesselId) {
     invites,
     vessels: isTrue(user.isAdmin) ? vessels.map(v => ({ vesselId: v.id, vesselName: v.name })) : undefined,
     pendingRequests: countPendingRequests(user),
+    supplies: suppliesForApp(),
     canRequestVessel: canRequestVessel(user),
     jobUpdates: jobUpdatesFor(user.id),
     catalog: roleCatalog()
@@ -688,6 +714,9 @@ function bootstrap(user, vesselId) {
       const c = vesselCtx(user, pick);
       out.vessel = { id: c.vessel.id, name: c.vessel.name, type: c.vessel.type, length: c.vessel.length, homePort: c.vessel.homePort,
                      flag: c.vessel.flag || '', usage: c.vessel.usage || '', classSociety: c.vessel.classSociety || '' };
+      VESSEL_DETAILS.forEach(k => out.vessel[k] = c.vessel[k] || '');
+      out.canEditBoat = c.perms.manageCrew || c.perms.editAll;
+      out.rules = rulesForApp();
       out.position = c.position;
       out.perms = c.perms;
       out.tasks = listTasks(c, user);
@@ -702,7 +731,8 @@ function bootstrap(user, vesselId) {
 }
 
 function publicUser(u) {
-  return { id: u.id, name: u.name, email: u.email, isAdmin: isTrue(u.isAdmin), canSearch: canSearch(u) };
+  return { id: u.id, name: u.name, email: u.email, isAdmin: isTrue(u.isAdmin), canSearch: canSearch(u),
+           consultant: isTrue(u.consultant) || isTrue(u.isAdmin) };
 }
 
 // ───────────────────────── VESSEL CONTEXT ─────────────────────────
@@ -1525,7 +1555,7 @@ function adminOverview() {
     ok: true, vessels,
     emailQuota: (function () { try { return MailApp.getRemainingDailyQuota(); } catch (e) { return null; } })(),
     users: users.filter(u => !isDeletedUser(u)).map(u => ({
-      id: u.id, name: u.name, email: u.email, active: isTrue(u.active), isAdmin: isTrue(u.isAdmin),
+      id: u.id, name: u.name, email: u.email, active: isTrue(u.active), isAdmin: isTrue(u.isAdmin), consultant: isTrue(u.consultant),
       needsSetup: !u.passwordHash,
       vessels: ms.filter(m => m.userId === u.id && m.status === 'active').map(m => (vName[m.vesselId] || '?') + ', ' + titleOf(m.position) + ' (' + permsOfMember(m).accessLabel + ')')
     })).sort((a, b) => a.name < b.name ? -1 : 1)
@@ -1650,6 +1680,7 @@ function createTask(c, user, t) {
     assignedTo: t.assignedTo || '', state: 'Open', createdBy: user.id, createdAt: nowIso(),
     lastPerformed: '', lastPerformedBy: '', resolution: '', reminderLog: '', vesselId: c.vessel.id
   };
+  Object.assign(task, basisFor(t.ruleId, t.basis));
   insert('Tasks', task);
   audit(user.id, 'create', task.id, type + ': ' + task.title, c.vessel.id);
   if (t.note) addNote(c, user, task.id, t.note);
@@ -2127,7 +2158,7 @@ const TABLE_CACHE = {}; // lives for one request only
 
 const HEADERS_CHECKED = {};
 
-const AUTO_TABS = ['TaskReviews', 'Attachments', 'StoredFiles', 'VesselRequests', 'Rotations', 'RotationChanges', 'RotationRules', 'Handovers', 'WorkSubmissions'];
+const AUTO_TABS = ['TaskReviews', 'Attachments', 'StoredFiles', 'VesselRequests', 'Rotations', 'RotationChanges', 'RotationRules', 'Handovers', 'WorkSubmissions', 'Rules', 'RuleHistory', 'SupplyMaps'];
 
 function sheet(name) {
   let sh = SpreadsheetApp.getActive().getSheetByName(name);
@@ -2738,7 +2769,8 @@ function importVessel(admin, pkg) {
   if (nameTaken(name)) name = name + ' (restored ' + today() + ')';
   const vrow = { id: vid, name, type: clip(pkg.vessel.type, 60), length: clip(pkg.vessel.length, 20), homePort: clip(pkg.vessel.homePort, 80),
                  active: 'TRUE', createdAt: pkg.vessel.createdAt || nowIso(), createdBy: pkg.vessel.createdBy || admin.id, deletedAt: '',
-                 flag: clip(pkg.vessel.flag, 60), usage: USAGES.indexOf(pkg.vessel.usage) !== -1 ? pkg.vessel.usage : '', classSociety: clip(pkg.vessel.classSociety, 60) };
+                 flag: clip(pkg.vessel.flag, 80), usage: USAGES.indexOf(pkg.vessel.usage) !== -1 ? pkg.vessel.usage : '', classSociety: clip(pkg.vessel.classSociety, 60) };
+  VESSEL_DETAILS.forEach(k => vrow[k] = clip(pkg.vessel[k], 160));
   if (mode === 'restore') update('Vessels', old._row, Object.assign(old, vrow)); else insert('Vessels', vrow);
 
   // people: same account (by id and email), else same email, else a new account without a password
@@ -3589,10 +3621,10 @@ function addStarterTasks(c, user, list, rules) {
     validateInterval(t.intervalValue, t.intervalUnit);
     validateDate(t.dueDate);
     if (c.perms.depts !== 'all' && !inMyDept(c, { system: t.system })) { skipped++; return; } // leads: own departments only
-    rows.push({ id: newId('T'), title, description: clip(t.description, 3000), system: clip(t.system, 60), type: 'Routine',
+    rows.push(Object.assign({ id: newId('T'), title, description: clip(t.description, 3000), system: clip(t.system, 60), type: 'Routine',
       dueDate: t.dueDate, dueTime: '', recurring: 'TRUE', intervalValue: String(t.intervalValue), intervalUnit: String(t.intervalUnit),
       assignedTo: '', state: 'Open', createdBy: user.id, createdAt: now, lastPerformed: '', lastPerformedBy: '',
-      resolution: '', reminderLog: '', vesselId: c.vessel.id });
+      resolution: '', reminderLog: '', vesselId: c.vessel.id }, basisFor(t.ruleId, 'recommended')));
   });
   insertMany('Tasks', rows);
   audit(user.id, 'starterProgram', '', rows.length + ' routine tasks added from the starter list' + (skipped ? ' (' + skipped + ' skipped)' : ''), c.vessel.id);
@@ -3602,13 +3634,329 @@ function addStarterTasks(c, user, list, rules) {
 }
 
 
-/** Flag state, private or charter use, and class society: they decide which safety and survey items apply. */
-const USAGES = ['private', 'charter'];
+/** Flag state, private or charter use, and class society (sent with the starter program). */
+const USAGES = ['private', 'charter', 'passenger', 'other'];
 function saveVesselRules(c, user, r) {
+  saveVesselDetails(c, user, { flag: r.flag, usage: r.usage, classSociety: r.classSociety }, true);
+}
+
+// ═════════════════════════ BOAT DETAILS ═════════════════════════
+// What decides which codes apply: flag and registry, use, LOA and load-line length, gross tonnage, build/conversion dates,
+// persons aboard, operating area and class. Any of them may be "unknown"; the app then says review is required.
+const VESSEL_DETAILS = ['registry', 'gt', 'buildYear', 'conversionYear', 'loadLineLength', 'maxPassengers', 'maxCrew', 'areaScope', 'operatingArea'];
+const AREA_SCOPES = ['domestic', 'international'];
+
+function vesselDetailsOf(vesselId) {
+  const v = readTable('Vessels').find(x => x.id === vesselId) || {};
+  const out = { id: v.id, name: v.name, type: v.type, length: v.length, homePort: v.homePort,
+                flag: v.flag || '', usage: v.usage || '', classSociety: v.classSociety || '' };
+  VESSEL_DETAILS.forEach(k => out[k] = v[k] || '');
+  return out;
+}
+
+function cleanNumberOrUnknown(v, label, max) {
+  v = String(v == null ? '' : v).trim().toLowerCase();
+  if (v === '' || v === 'unknown') return v;
+  const n = Number(v.replace(/,/g, ''));
+  if (!(n >= 0) || n > max) throw new Error(label + ' must be a number or "unknown"');
+  return String(n);
+}
+
+function cleanYear(v, label) {
+  v = String(v == null ? '' : v).trim().toLowerCase();
+  if (v === '' || v === 'unknown') return v;
+  if (!/^\d{4}$/.test(v) || Number(v) < 1900 || Number(v) > new Date().getFullYear() + 3) throw new Error(label + ' must be a 4-digit year or "unknown"');
+  return v;
+}
+
+/** Captain or Owner edits the boat details. fromStarter: only flag, use and class, sent by whoever loads the starter program. */
+function saveVesselDetails(c, user, d, fromStarter) {
+  if (!fromStarter && !(c.perms.manageCrew || c.perms.editAll)) throw new Error('Only the Captain or Owner can edit the boat details');
   const v = readTable('Vessels').find(x => x.id === c.vessel.id);
-  const flag = clip(r.flag, 60), usage = USAGES.indexOf(r.usage) !== -1 ? r.usage : '', cls = clip(r.classSociety, 60);
-  if (v.flag === flag && v.usage === usage && v.classSociety === cls) return;
-  v.flag = flag; v.usage = usage; v.classSociety = cls;
+  const next = {};
+  if (d.flag !== undefined) next.flag = clip(d.flag, 80);
+  if (d.usage !== undefined) next.usage = USAGES.indexOf(d.usage) !== -1 ? d.usage : '';
+  if (d.classSociety !== undefined) next.classSociety = clip(d.classSociety, 60);
+  if (!fromStarter) {
+    if (d.length !== undefined) next.length = clip(d.length, 20);
+    if (d.registry !== undefined) next.registry = clip(d.registry, 80);
+    if (d.gt !== undefined) next.gt = cleanNumberOrUnknown(d.gt, 'Gross tonnage', 100000);
+    if (d.buildYear !== undefined) next.buildYear = cleanYear(d.buildYear, 'Build year');
+    if (d.conversionYear !== undefined) next.conversionYear = cleanYear(d.conversionYear, 'Conversion year');
+    if (d.loadLineLength !== undefined) next.loadLineLength = clip(d.loadLineLength, 20);
+    if (d.maxPassengers !== undefined) next.maxPassengers = cleanNumberOrUnknown(d.maxPassengers, 'Passengers', 5000);
+    if (d.maxCrew !== undefined) next.maxCrew = cleanNumberOrUnknown(d.maxCrew, 'Crew', 1000);
+    if (d.areaScope !== undefined) next.areaScope = AREA_SCOPES.indexOf(d.areaScope) !== -1 ? d.areaScope : (d.areaScope === 'unknown' ? 'unknown' : '');
+    if (d.operatingArea !== undefined) next.operatingArea = clip(d.operatingArea, 160);
+  }
+  const changed = Object.keys(next).filter(k => String(v[k] || '') !== next[k]);
+  if (!changed.length) return;
+  changed.forEach(k => v[k] = next[k]);
   update('Vessels', v._row, v);
-  audit(user.id, 'vesselRules', '', [flag || 'flag not set', usage || 'use not set', cls || 'not classed'].join(', '), c.vessel.id);
+  audit(user.id, 'vesselDetails', '', changed.map(k => k + ': ' + (next[k] || 'blank')).join('; ').slice(0, 400), c.vessel.id);
+}
+
+// ═════════════════════════ RULES (reviewed by a marine compliance consultant) ═════════════════════════
+// Every routine job in the CJM list starts as a DRAFT rule labelled "recommended". A consultant (or CJM admin) reviews each one:
+// approve it as it stands, correct it (basis, authority, source, interval, who applies) and approve, or reject it.
+// Only APPROVED rules can make a task "regulatory". Every change is versioned with who, when and why.
+const RULE_BASES = ['recommended', 'manufacturer', 'regulatory'];
+const RULE_AUTHORITIES = ['cjm', 'oem', 'flag', 'class', 'state', 'uscg', 'other'];
+const RULE_STATUS = ['draft', 'approved', 'rejected'];
+const RULE_EDIT = ['title', 'system', 'basis', 'authority', 'jurisdiction', 'source', 'sourceRef', 'edition', 'appliesFlags', 'appliesUsage',
+                   'minLength', 'maxLength', 'minGT', 'maxGT', 'minPassengers', 'maxPassengers', 'classed', 'area',
+                   'every', 'unit', 'performer', 'proof', 'exceptions', 'notes'];
+
+function requireConsultant(user) {
+  if (!(isTrue(user.isAdmin) || isTrue(user.consultant))) throw new Error('Only the CJM compliance consultant or a CJM admin can review rules');
+}
+
+function cleanRule(r, base) {
+  const o = Object.assign({}, base || {});
+  RULE_EDIT.forEach(k => { if (r[k] !== undefined) o[k] = clip(r[k], k === 'notes' || k === 'exceptions' || k === 'proof' ? 1000 : 200); });
+  if (o.basis && RULE_BASES.indexOf(o.basis) === -1) throw new Error('Basis must be recommended, manufacturer or regulatory');
+  if (o.authority && RULE_AUTHORITIES.indexOf(o.authority) === -1) throw new Error('Unknown authority');
+  if (o.every !== undefined && o.every !== '') validateInterval(o.every, o.unit);
+  if (o.classed && ['yes', 'no', 'any', ''].indexOf(o.classed) === -1) throw new Error('Classed must be yes, no or any');
+  ['minLength', 'maxLength', 'minGT', 'maxGT', 'minPassengers', 'maxPassengers'].forEach(k => {
+    if (o[k] !== undefined && o[k] !== '' && !(Number(o[k]) >= 0)) throw new Error(k + ' must be a number');
+  });
+  if (!o.title) throw new Error('Rule title required');
+  return o;
+}
+
+function ruleSnapshot(r) { const o = {}; RULE_EDIT.concat(['status', 'reviewNote']).forEach(k => o[k] = r[k] || ''); return JSON.stringify(o).slice(0, 5000); }
+
+function ruleLog(rule, action, user, note) {
+  insert('RuleHistory', { id: newId('RH'), ruleId: rule.id, version: rule.version, action, changedBy: user.id, changedAt: nowIso(),
+                          note: clip(note, 1000), snapshot: ruleSnapshot(rule) });
+}
+
+function ruleView(r, names) {
+  const o = {};
+  SHEETS.Rules.forEach(k => o[k] = r[k] || '');
+  o.reviewedByName = names[r.reviewedBy] || '';
+  return o;
+}
+
+function listRules() {
+  const names = crewNames();
+  const hist = {};
+  readTable('RuleHistory').forEach(h => hist[h.ruleId] = (hist[h.ruleId] || 0) + 1);
+  return { ok: true, rules: readTable('Rules').map(r => Object.assign(ruleView(r, names), { changes: hist[r.id] || 0 })) };
+}
+
+/** CJM admin loads the website's job list as draft rules (ids from the website; existing ids are left alone). */
+function seedRules(user, list) {
+  if (!Array.isArray(list) || !list.length) throw new Error('Nothing to load');
+  if (list.length > 500) throw new Error('Too many rules at once');
+  const have = {}; readTable('Rules').forEach(r => have[r.id] = 1);
+  const now = nowIso(), rows = [], hist = [];
+  list.forEach(r => {
+    const id = String(r.id || '');
+    if (!/^[a-z0-9-]{3,90}$/.test(id) || have[id]) return;
+    have[id] = 1;
+    const o = cleanRule(r);
+    Object.assign(o, { id, status: 'draft', reviewNote: '', reviewedBy: '', reviewedAt: '', version: '1', createdAt: now, updatedAt: now });
+    rows.push(o);
+    hist.push({ id: newId('RH'), ruleId: id, version: '1', action: 'created', changedBy: user.id, changedAt: now, note: 'Loaded from the CJM job list', snapshot: ruleSnapshot(o) });
+  });
+  insertMany('Rules', rows);
+  insertMany('RuleHistory', hist);
+  if (rows.length) audit(user.id, 'seedRules', '', rows.length + ' draft rules loaded', '');
+  return Object.assign(listRules(), { added: rows.length });
+}
+
+function addRule(user, r) {
+  const o = cleanRule(r);
+  const now = nowIso();
+  Object.assign(o, { id: 'r-' + newId('R').slice(2).toLowerCase(), status: 'draft', reviewNote: '', reviewedBy: '', reviewedAt: '',
+                     version: '1', createdAt: now, updatedAt: now });
+  insert('Rules', o);
+  ruleLog(o, 'created', user, r.note || 'Added by ' + user.name);
+  return listRules();
+}
+
+/** action: 'save' (keep status), 'approve', 'reject', 'reopen' (back to draft). A reject or a change to an approved rule needs a note. */
+function saveRule(user, id, changes, action, note) {
+  const r = readTable('Rules').find(x => x.id === id);
+  if (!r) throw new Error('Rule not found');
+  action = ['save', 'approve', 'reject', 'reopen'].indexOf(action) !== -1 ? action : 'save';
+  const before = ruleSnapshot(r);
+  const next = cleanRule(changes, r);
+  const edited = RULE_EDIT.filter(k => String(r[k] || '') !== String(next[k] || ''));
+  if (action === 'reject' && !String(note || '').trim()) throw new Error('Say why the rule is rejected');
+  if (r.status === 'approved' && edited.length && action !== 'approve' && !String(note || '').trim()) throw new Error('Explain the change to an approved rule');
+  if (next.basis === 'regulatory' && action === 'approve' && !(next.source && next.authority && next.authority !== 'cjm')) {
+    throw new Error('A regulatory rule needs its authority and source before it can be approved');
+  }
+  RULE_EDIT.forEach(k => r[k] = next[k]);
+  if (action === 'approve') r.status = 'approved';
+  if (action === 'reject') r.status = 'rejected';
+  if (action === 'reopen') r.status = 'draft';
+  if (action !== 'save' || edited.length) {
+    r.reviewNote = clip(note, 1000) || r.reviewNote;
+    r.reviewedBy = user.id; r.reviewedAt = nowIso();
+  }
+  if (ruleSnapshot(r) === before) return listRules();
+  r.version = String((Number(r.version) || 1) + 1);
+  r.updatedAt = nowIso();
+  update('Rules', r._row, r);
+  ruleLog(r, action === 'approve' ? (edited.length ? 'corrected and approved' : 'approved') : action === 'save' ? 'edited' : action === 'reject' ? 'rejected' : 'reopened',
+          user, note + (edited.length ? (note ? ' | ' : '') + 'Changed: ' + edited.join(', ') : ''));
+  audit(user.id, 'rule', '', r.title + ': ' + action + ' (v' + r.version + ')', '');
+  return listRules();
+}
+
+function ruleHistory(id) {
+  const names = crewNames();
+  return { ok: true, history: readTable('RuleHistory').filter(h => h.ruleId === id).sort((a, b) => a.changedAt < b.changedAt ? 1 : -1)
+    .map(h => ({ version: h.version, action: h.action, by: names[h.changedBy] || '', at: h.changedAt, note: h.note })) };
+}
+
+/** Reviewed rules for the website: approved ones drive labels and intervals; rejected ones are hidden from suggestions. */
+function rulesForApp() {
+  if (!SHEETS.Rules) return [];
+  return readTable('Rules').filter(r => r.status === 'approved' || r.status === 'rejected').map(r => {
+    const o = { id: r.id, status: r.status };
+    if (r.status === 'approved') RULE_EDIT.forEach(k => o[k] = r[k] || '');
+    return o;
+  });
+}
+
+/** Label a new task. Regulatory only through an approved rule; the website cannot claim it. */
+function basisFor(ruleId, asked) {
+  const rule = ruleId && readTable('Rules').find(r => r.id === ruleId && r.status === 'approved');
+  if (rule) return { basis: rule.basis || 'recommended', authority: rule.authority || '', ruleId: rule.id };
+  const b = asked === 'manufacturer' || asked === 'recommended' ? asked : '';
+  return { basis: b, authority: b === 'manufacturer' ? 'oem' : b === 'recommended' ? 'cjm' : '', ruleId: ruleId && /^[a-z0-9-]{3,90}$/.test(ruleId) ? ruleId : '' };
+}
+
+/** CJM admin gives (or removes) the rules-review login. New people get an account with a set-password email. */
+function setConsultant(admin, email, name, on) {
+  email = String(email || '').toLowerCase().trim();
+  if (!emailOk(email)) throw new Error('Enter a valid email');
+  let u = readTable('Users').find(x => x.email === email);
+  if (!u) {
+    if (!on) throw new Error('No account with that email');
+    if (!String(name || '').trim()) throw new Error('Enter their name. This email does not have an account yet.');
+    u = { id: newId('U'), name: clip(name, 100), email, passwordHash: '', salt: Utilities.getUuid(), active: 'TRUE', isAdmin: 'FALSE', createdAt: nowIso(), consultant: 'TRUE' };
+    insert('Users', u);
+    const link = makeSetupLink(u.id);
+    const emailed = mailSetup(u, null, '', admin, link);
+    audit(admin.id, 'consultant', '', u.name + ' <' + email + '> added as rules consultant', '');
+    return { ok: true, status: 'created', name: u.name, email, setupLink: link, emailed,
+             message: u.name + ' can now review rules. ' + (emailed ? 'A set-password email was sent.' : 'Send them the link below.') };
+  }
+  u.consultant = on ? 'TRUE' : 'FALSE';
+  update('Users', u._row, u);
+  audit(admin.id, 'consultant', '', u.name + (on ? ' given' : ' removed from') + ' rules review', '');
+  return { ok: true, status: 'updated', message: u.name + (on ? ' can now review rules.' : ' no longer reviews rules.') };
+}
+
+// ═════════════════════════ MARINE SUPPLIES (supplier links) ═════════════════════════
+// Tasks that use consumables get a "Purchase Supplies" button that opens a supplier search in a new tab.
+// Crew buy directly from the supplier; CJM never processes orders and buying never completes a task.
+// The Amazon Associates tag lives only here (Script Properties) and is OFF until CJM records written confirmation
+// that the yachts' purchases qualify (commercial/charter use is restricted by the Associates policies).
+const SUPPLY_CATEGORIES = ['deck', 'interior', 'mechanical', 'electrical', 'safety', 'other'];
+const SUPPLY_DEFAULTS = {
+  tag: '', tagEnabled: false, eligibility: '', eligibilityBy: '', eligibilityAt: '',
+  generalUrl: 'https://www.amazon.com/s?k=marine+supplies',
+  searchTemplate: 'https://www.amazon.com/s?k={term}'
+};
+const AMAZON_URL = /^https:\/\/(www\.)?amazon\.(com|co\.uk|de|fr|it|es|ca|com\.mx|com\.au)\//i;
+
+function supplySettings() {
+  let saved = {};
+  try { saved = JSON.parse(PropertiesService.getScriptProperties().getProperty('supply_settings') || '{}'); } catch (e) { saved = {}; }
+  return Object.assign({}, SUPPLY_DEFAULTS, saved);
+}
+
+/** Links the website builds. The tag is added only when switched on and eligibility is recorded. */
+function supplyLinks(st) {
+  const on = !!(st.tagEnabled && st.tag && st.eligibility);
+  const withTag = (u) => (on ? u + (u.indexOf('?') === -1 ? '?' : '&') + 'tag=' + encodeURIComponent(st.tag) : u);
+  const search = (st.searchTemplate || SUPPLY_DEFAULTS.searchTemplate);
+  return { tagOn: on, generalUrl: withTag(st.generalUrl || SUPPLY_DEFAULTS.generalUrl),
+           searchUrl: search.indexOf('{tag}') !== -1 ? (on ? search.replace('{tag}', encodeURIComponent(st.tag)) : search.replace(/[?&]tag=\{tag\}/, '')) : withTag(search) };
+}
+
+function suppliesForApp() {
+  const st = supplySettings();
+  const maps = SHEETS.SupplyMaps ? readTable('SupplyMaps').filter(m => isTrue(m.enabled))
+    .map(m => ({ id: m.id, match: m.match, term: m.term, category: m.category, note: m.note, verify: isTrue(m.verify) })) : [];
+  return Object.assign({ maps }, supplyLinks(st));
+}
+
+function adminSupplies() {
+  const st = supplySettings();
+  const names = crewNames();
+  return { ok: true, settings: Object.assign({}, st, { eligibilityByName: names[st.eligibilityBy] || '' }), links: supplyLinks(st),
+           maps: readTable('SupplyMaps').map(m => ({ id: m.id, match: m.match, term: m.term, category: m.category, enabled: isTrue(m.enabled),
+             note: m.note, verify: isTrue(m.verify), updatedBy: names[m.updatedBy] || '', updatedAt: m.updatedAt })) };
+}
+
+function cleanSupplyMap(m) {
+  const match = clip(m.match, 300).toLowerCase(), term = clip(m.term, 120);
+  if (!match) throw new Error('Say which tasks it matches (words in the task title, or a CJM job id)');
+  if (!term) throw new Error('Enter the search phrase');
+  if (/[<>]|https?:/i.test(term)) throw new Error('The search phrase must be plain words, not a link');
+  return { match, term, category: SUPPLY_CATEGORIES.indexOf(m.category) !== -1 ? m.category : 'other',
+           enabled: m.enabled === false ? 'FALSE' : 'TRUE', note: clip(m.note, 200), verify: m.verify ? 'TRUE' : 'FALSE' };
+}
+
+function saveSupplyMap(user, m) {
+  const clean = cleanSupplyMap(m);
+  const row = m.id && readTable('SupplyMaps').find(x => x.id === m.id);
+  const stamp = { updatedBy: user.id, updatedAt: nowIso() };
+  if (row) update('SupplyMaps', row._row, Object.assign(row, clean, stamp));
+  else insert('SupplyMaps', Object.assign({ id: newId('SM') }, clean, stamp));
+  audit(user.id, 'supplyMap', '', clean.term + ' (' + clean.match + ')' + (clean.enabled === 'TRUE' ? '' : ' disabled'), '');
+  return adminSupplies();
+}
+
+function deleteSupplyMap(user, id) {
+  if (!deleteRowsWhere('SupplyMaps', x => x.id === id)) throw new Error('Not found');
+  audit(user.id, 'supplyMapDelete', '', id, '');
+  return adminSupplies();
+}
+
+/** The website's starter list of task-to-search mappings; only phrases not already present are added. */
+function loadSupplyDefaults(user, list) {
+  if (!Array.isArray(list)) throw new Error('Nothing to load');
+  const have = {}; readTable('SupplyMaps').forEach(m => have[m.match] = 1);
+  const stamp = { updatedBy: user.id, updatedAt: nowIso() };
+  const rows = list.map(cleanSupplyMap).filter(m => !have[m.match] && (have[m.match] = 1)).map(m => Object.assign({ id: newId('SM') }, m, stamp));
+  insertMany('SupplyMaps', rows);
+  audit(user.id, 'supplyDefaults', '', rows.length + ' supply searches added', '');
+  return Object.assign(adminSupplies(), { added: rows.length });
+}
+
+function saveSupplySettings(user, s) {
+  const st = supplySettings();
+  if (s.generalUrl !== undefined) {
+    if (!AMAZON_URL.test(String(s.generalUrl))) throw new Error('The general link must be an https Amazon address');
+    st.generalUrl = clip(s.generalUrl, 500);
+  }
+  if (s.searchTemplate !== undefined) {
+    if (!AMAZON_URL.test(String(s.searchTemplate)) || String(s.searchTemplate).indexOf('{term}') === -1) throw new Error('The search link must be an https Amazon address containing {term}');
+    st.searchTemplate = clip(s.searchTemplate, 500);
+  }
+  if (s.tag !== undefined) {
+    const tag = String(s.tag || '').trim();
+    if (tag && !/^[A-Za-z0-9-]{3,40}$/.test(tag)) throw new Error('The Associates tracking ID looks wrong (letters, numbers and dashes, e.g. cjmmarine-20)');
+    st.tag = tag;
+  }
+  if (s.eligibility !== undefined && clip(s.eligibility, 1000) !== st.eligibility) {
+    st.eligibility = clip(s.eligibility, 1000); st.eligibilityBy = user.id; st.eligibilityAt = nowIso();
+  }
+  if (s.tagEnabled !== undefined) {
+    if (s.tagEnabled && !st.tag) throw new Error('Enter the Associates tracking ID first');
+    if (s.tagEnabled && !st.eligibility) throw new Error('Record the written confirmation from Amazon Associates (or counsel) before switching the tag on');
+    st.tagEnabled = !!s.tagEnabled;
+  }
+  PropertiesService.getScriptProperties().setProperty('supply_settings', JSON.stringify(st));
+  audit(user.id, 'supplySettings', '', 'Tag ' + (st.tagEnabled ? 'ON' : 'off') + (st.tag ? ' (' + st.tag + ')' : ''), '');
+  return adminSupplies();
 }

@@ -1,4 +1,5 @@
 import TaskRow from './TaskRow.jsx';
+import { missingDetails } from '../jobLibrary.js';
 
 function Group({ title, items, onOpen, empty }) {
   return (
@@ -9,7 +10,7 @@ function Group({ title, items, onOpen, empty }) {
   );
 }
 
-export default function Board({ tasks, onOpen, onStarter }) {
+export default function Board({ tasks, onOpen, onStarter, vessel, onDetails }) {
   const open = tasks.filter((t) => t.state === 'Open');
   const routine = open.filter((t) => t.type === 'Routine');
   const red = open.filter((t) => t.color === 'red');
@@ -19,6 +20,12 @@ export default function Board({ tasks, onOpen, onStarter }) {
 
   return (
     <div className="board">
+      {onDetails && vessel && missingDetails(vessel).length > 0 && (
+        <div className="review-note board-review">
+          <span><b>Review required.</b> {missingDetails(vessel).join(', ')} {missingDetails(vessel).length === 1 ? 'is' : 'are'} not known yet, so CJM Marine cannot show which regulations apply to {vessel.name}.</span>
+          <button className="btn" onClick={onDetails}>Boat details</button>
+        </div>
+      )}
       {onStarter && routine.length < 10 && (
         <div className="starter-card card">
           <div>

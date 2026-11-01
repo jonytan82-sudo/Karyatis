@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import TaskRow from './TaskRow.jsx';
 import { SYSTEMS } from '../util.js';
 
-export default function TaskList({ tasks, onOpen, onStarter }) {
+export default function TaskList({ tasks, onOpen, onStarter, onDetails }) {
   const [q, setQ] = useState('');
   const [state, setState] = useState('Open');
   const [type, setType] = useState('');
@@ -19,8 +19,11 @@ export default function TaskList({ tasks, onOpen, onStarter }) {
 
   return (
     <div className="task-list">
-      {onStarter && (
-        <div className="list-tools"><button className="link" onClick={onStarter}>Load starter maintenance program</button></div>
+      {(onStarter || onDetails) && (
+        <div className="list-tools">
+          {onDetails && <button className="link" onClick={onDetails}>Boat details</button>}
+          {onStarter && <button className="link" onClick={onStarter}>Load starter maintenance program</button>}
+        </div>
       )}
       <div className="filters">
         <input type="search" placeholder="Search tasks" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search tasks" />

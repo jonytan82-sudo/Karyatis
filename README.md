@@ -68,12 +68,41 @@ React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
 5. Web addresses typed or pasted in notes, descriptions, resolutions and the activity log are clickable.
 6. CJM admin tab should show `Google Script version: 2.5 (photos and files on notes)`.
 
+## Upgrade to 3.5 (marine supplies links)
+Paste Code.gs → save → Manage deployments → pencil → New version → Deploy, then upload this folder to GitHub.
+1. CJM admin → **Marine supplies** → **Load the starter list** (23 task-to-search lines). Edit, add, turn off or remove any line; changes show
+   the next time crew open a task (no deploy).
+2. Tasks whose title matches a line show **Purchase supplies**: the search phrase, an optional note, a "confirm the manufacturer part
+   number" reminder for oil, filters and safety items, and **Shop on Amazon** (new tab). Buying never completes a task.
+3. Menu → **Marine supplies**: general Amazon shopping, a search box and category links, independent of tasks.
+4. **Amazon Associates tag**: stored only in the Google Script settings, OFF by default. It cannot be switched on until a tracking ID and a
+   written eligibility confirmation (Amazon Associates or counsel: who, when, reference) are recorded. While off, links are plain Amazon links and
+   the disclosure says CJM does not earn from them; when on, the Associates statement is shown next to every link.
+
+## Upgrade to 3.4 (boat details, rule labels and consultant review)
+Paste Code.gs → save → Manage deployments → pencil → New version → Deploy, then upload this folder to GitHub.
+New tabs Rules and RuleHistory are created on their own; Users, Vessels and Tasks get extra columns on their own.
+1. **Boat details** (Board → "Boat details", or All tasks → Boat details; Captain or Owner): flag and port of registry, operating type
+   (private, commercial charter, passenger, other), class, LOA and load-line length, gross tonnage, build and conversion year,
+   maximum passengers and crew, operating area. Any of them can be "Unknown". While a key detail is unknown the Board says
+   **Review required** and the starter program says which regulations cannot be determined.
+2. **Labels** on every task: Recommended (CJM suggestion), Manufacturer (the captain marks it), Regulatory · Flag/Class/State/USCG.
+   Regulatory comes only from a rule the consultant approved; the server ignores any other claim. Everything else stays Recommended.
+3. **Rules consultant login**: CJM admin → Rules consultants → email + name → "Give rules access". They get a set-password email,
+   log in with an emailed code and see only **Rules review** (no boats, crew or tasks).
+4. **Rules review** (consultant and CJM admin): first, the admin presses **Load CJM job list** (130 draft rules). Each rule can be approved,
+   corrected and approved, or rejected; a regulatory rule needs its authority and source; rejecting or changing an approved rule needs a note.
+   Every version is kept with who, when and why. **Download review sheet (CSV)** gives the whole list for offline review.
+5. Approved rules change the starter program and New task list (label, interval, who it applies to); rejected rules disappear from suggestions.
+
 ## Upgrade to 3.3 (flag, charter and class in the starter program)
 Paste Code.gs → save → Manage deployments → pencil → New version → Deploy, then upload this folder to GitHub.
 - The starter program also asks the flag state, private or charter use, and class society (saved on the boat; Vessels gets three columns on its own).
 - Charter/commercial yachts get flag survey, weekly lifesaving inspection, GMDSS radio survey, ISM audit (large yachts) and record-book jobs.
   Classed yachts get class annual and renewal surveys, tailshaft and bottom surveys.
 - Jobs whose interval is usually set by the flag state or class society are tagged FLAG or CLASS, and their description says to match the survey schedule.
+- First due dates: "Spread over the next few weeks" (default) or "Start from today" (each job first due one full interval from now).
+- The vessel drop-down list always shows dark text on white.
 - These are general guidance drafted from industry practice, not the text of any code; check with the flag administration and class society.
 
 ## Upgrade to 3.2 (common jobs and starter program)
