@@ -27,7 +27,7 @@ import { SuppliesPage } from './components/Supplies.jsx';
 
 const REVIEW_TOKEN = new URLSearchParams(window.location.search).get('w') || '';
 
-const VESSEL_TABS = ['board', 'calendar', 'tasks', 'crew', 'rotation', 'reviews'];
+const VESSEL_TABS = ['board', 'calendar', 'tasks', 'crew', 'rotation', 'reviews', 'supplies'];
 const ICONS = { supplies: 'cart', rules: 'shield', board: 'gauge', calendar: 'calendar', tasks: 'check', crew: 'crew', rotation: 'rotation', reviews: 'star', vessels: 'yacht', profile: 'user', directory: 'search', admin: 'shield' };
 const PHONE = '(max-width: 700px)';
 
@@ -162,7 +162,7 @@ export default function App() {
   if (user.canSearch) tabs.push(['directory', 'Find crew']);
   if (user.isAdmin) tabs.push(['admin', 'CJM admin']);
   const onVesselTab = vessel && VESSEL_TABS.includes(tab);
-  const badgeFor = (key) => (key === 'crew' ? s.vesselRequests : key === 'reviews' ? s.pendingTaskReviews : key === 'admin' ? s.pendingRequests : key === 'profile' ? s.jobUpdates : 0) || 0;
+  const badgeFor = (key) => (key === 'crew' ? s.vesselRequests : key === 'reviews' ? s.pendingTaskReviews : key === 'admin' ? s.pendingRequests : key === 'profile' ? s.jobUpdates : key === 'supplies' ? s.partsPending : 0) || 0;
   const openJobs = () => { setProfileSub('jobs'); openTab('profile'); };
   const newTaskLabel = perms && (perms.createRoutine ? 'New task' : perms.contractor ? 'Record finding' : 'Report issue');
   const canSubmit = vessel && s.canSubmitWork;
@@ -205,7 +205,7 @@ export default function App() {
       {tab === 'tasks' && vessel && <TaskList tasks={s.tasks || []} onOpen={setOpenId} onStarter={perms.createRoutine ? () => setStarter(true) : null}
         onDetails={s.canEditBoat ? () => setDetails(true) : null} />}
       {tab === 'rules' && user.consultant && <RulesReview user={user} />}
-      {tab === 'supplies' && <SuppliesPage supplies={s.supplies} />}
+      {tab === 'supplies' && <SuppliesPage key={vessel ? vessel.id : 'none'} supplies={s.supplies} vessel={vessel} isBuyer={!!s.isBuyer} pending={s.partsPending || 0} onOpenTask={setOpenId} onChanged={refresh} />}
       {tab === 'rotation' && vessel && !perms.contractor && <Rotation user={user} onOpenTask={setOpenId} />}
       {tab === 'reviews' && vessel && s.canReviewWork && <WorkReviews vessel={vessel} onChanged={refresh} />}
       {tab === 'crew' && vessel && !perms.contractor && (
@@ -225,6 +225,7 @@ export default function App() {
         <TaskDetail
           id={openId}
           supplies={s.supplies}
+          isBuyer={!!s.isBuyer}
           onClose={() => setOpenId(null)}
           onChanged={refresh}
           onEdit={(t) => { setOpenId(null); setEditing(t); }}
@@ -248,7 +249,7 @@ export default function App() {
           perms={perms}
           rules={s.rules || []}
           onClose={() => setEditing(null)}
-          onSaved={(t) => { setEditing(null); refresh(); setOpenId(t.id); }}
+          onSaved={(t, partsMsg) => { setEditing(null); refresh(); setOpenId(t.id); if (partsMsg) setSentMsg(partsMsg); }}
         />
       )}
     </>

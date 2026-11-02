@@ -144,3 +144,31 @@ export function shopLink(url, supplies) {
   const clean = url.replace(/([?&])tag=[^&]*/i, '$1').replace(/[?&]+$/, '');
   return clean + (clean.includes('?') ? '&' : '?') + 'tag=' + encodeURIComponent(supplies.tag);
 }
+
+// ── Send a list to the buyer's Amazon cart ──
+// Amazon's "Add to Cart form" link: /gp/aws/cart/add.html?ASIN.1=…&Quantity.1=… (from the testing copy).
+// It needs each item's Amazon product code (ASIN), taken from a saved /dp/ link. Amazon shows a confirmation page and adds the
+// items to the cart of whoever is signed in. NOT verified against Amazon's current site: the format is from Amazon's older
+// Product Advertising API guides. Search links cannot go into a cart.
+export function asinOf(url) {
+  const m = String(url || '').match(/^https:\/\/(www\.)?amazon\.[a-z.]+\/(?:[^/]+\/)?(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+  return m ? m[2].toUpperCase() : '';
+}
+
+/** Cart links for lines [{ url, qty }], 20 items per link. Only items with an Amazon product link go in. */
+export function cartLinks(lines, supplies) {
+  const host = (() => { try { return new URL(supplies.searchUrl.replace('{term}', 'x')).host; } catch { return 'www.amazon.com'; } })();
+  const ok = lines.map((l) => ({ ...l, asin: asinOf(l.url) })).filter((l) => l.asin);
+  const out = [];
+  for (let i = 0; i < ok.length; i += 20) {
+    const part = ok.slice(i, i + 20);
+    const u = new URL(`https://${host}/gp/aws/cart/add.html`);
+    part.forEach((l, j) => {
+      u.searchParams.set(`ASIN.${j + 1}`, l.asin);
+      u.searchParams.set(`Quantity.${j + 1}`, String(Math.min(999, Math.max(1, Number(l.qty) || 1))));
+    });
+    if (supplies.tagOn && supplies.tag) u.searchParams.set('AssociateTag', supplies.tag);
+    out.push({ url: u.toString(), items: part });
+  }
+  return out;
+}

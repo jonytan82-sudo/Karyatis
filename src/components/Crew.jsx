@@ -66,6 +66,7 @@ export default function Crew({ user, vessel, perms, crew, catalog, onChanged }) 
         <span className="access-line">
           <span className={`access-tag acc-${c.access}`}>{c.accessLabel}</span>
           {c.departments?.length > 0 && <small>{deptNames(catalog, c.departments)}</small>}
+          {c.partsBuyer && c.status === 'active' && <span className="access-tag acc-buyer">Parts buyer</span>}
           {c.status === 'invited' && <small>Invitation pending</small>}
           {c.needsSetup && c.status === 'active' && <small>Has not set a password yet</small>}
         </span>
@@ -75,6 +76,10 @@ export default function Crew({ user, vessel, perms, crew, catalog, onChanged }) 
           {c.status === 'active' && (
             <button className="btn" disabled={!catalog} title={catalog ? '' : 'Update the Google Script to 2.3 first'}
               onClick={() => setEditing({ member: c, role: { title: c.title, access: c.access, departments: c.departments || [] } })}>Edit role</button>
+          )}
+          {c.status === 'active' && c.access !== 'command' && (
+            <button className="link" onClick={() => run(() => call('setPartsBuyer', { userId: c.id, on: !c.partsBuyer }), c.partsBuyer ? `${c.name} no longer orders parts.` : `${c.name} can now approve and order parts.`)}>
+              {c.partsBuyer ? 'Remove parts buyer' : 'Make parts buyer'}</button>
           )}
           {c.needsSetup && c.status === 'active' && <button className="link" onClick={() => resend(c)}>New setup link</button>}
           <button className="link danger" onClick={() => remove(c)}>{c.status === 'invited' ? 'Cancel invite' : 'Remove'}</button>

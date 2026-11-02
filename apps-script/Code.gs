@@ -14,7 +14,7 @@
  *                body: JSON.stringify({ action, token, vesselId, ... }) })
  */
 
-const SCRIPT_VERSION = '3.6 (suggested and saved supply items)';
+const SCRIPT_VERSION = '4.0 (task status, returns and cores)';
 
 // ───────────────────────── CONFIG ─────────────────────────
 const CONFIG = {
@@ -47,7 +47,7 @@ const SHEETS = {
                 'phone', 'showContact', 'languages', 'certifications', 'experience', 'updatedAt',
                 'shareReviews', 'shareId', 'operatingArea'],
   Vessels:     ['id', 'name', 'type', 'length', 'homePort', 'active', 'createdAt', 'createdBy', 'deletedAt', 'flag', 'usage', 'classSociety',
-                'registry', 'gt', 'buildYear', 'conversionYear', 'loadLineLength', 'maxPassengers', 'maxCrew', 'areaScope', 'operatingArea'],
+                'registry', 'gt', 'buildYear', 'conversionYear', 'loadLineLength', 'maxPassengers', 'maxCrew', 'areaScope', 'operatingArea', 'partSpots'],
   VesselRequests: ['id', 'userId', 'name', 'type', 'length', 'homePort', 'role', 'message', 'status',
                    'createdAt', 'handledBy', 'handledAt', 'vesselId', 'note'],
   // Rotation & handover
@@ -55,7 +55,7 @@ const SHEETS = {
   RotationChanges: ['id', 'vesselId', 'userId', 'type', 'fromDate', 'toDate', 'note', 'status', 'requestedAt', 'handledBy', 'handledAt'],
   RotationRules:   ['vesselId', 'group', 'min'],
   Handovers:       ['id', 'vesselId', 'fromUserId', 'toUserId', 'changeDate', 'autoSummary', 'note', 'status', 'createdAt', 'sentAt', 'acceptedAt', 'acceptedBy'],
-  Memberships: ['id', 'vesselId', 'userId', 'position', 'status', 'joinedAt', 'leftAt', 'invitedBy', 'access', 'departments'],
+  Memberships: ['id', 'vesselId', 'userId', 'position', 'status', 'joinedAt', 'leftAt', 'invitedBy', 'access', 'departments', 'partsBuyer'],
   Sessions:    ['token', 'userId', 'expiresAt'],
   Tokens:      ['token', 'userId', 'purpose', 'expiresAt', 'used'],
   Requests:    ['id', 'name', 'email', 'kind', 'position', 'vesselName', 'message', 'status',
@@ -64,7 +64,7 @@ const SHEETS = {
   Tasks:       ['id', 'title', 'description', 'system', 'type', 'dueDate', 'dueTime',
                 'recurring', 'intervalValue', 'intervalUnit', 'assignedTo', 'state',
                 'createdBy', 'createdAt', 'lastPerformed', 'lastPerformedBy',
-                'resolution', 'reminderLog', 'vesselId', 'basis', 'authority', 'ruleId'],
+                'resolution', 'reminderLog', 'vesselId', 'basis', 'authority', 'ruleId', 'workStatus', 'workStatusBy', 'workStatusAt'],
   Completions: ['id', 'taskId', 'dueDate', 'performedDate', 'performedBy', 'timing', 'notes', 'loggedAt'],
   Notes:       ['id', 'taskId', 'userId', 'text', 'createdAt'],
   Attachments: ['id', 'vesselId', 'taskId', 'noteId', 'fileId', 'name', 'mimeType', 'size', 'thumb', 'userId', 'createdAt'],
@@ -85,7 +85,15 @@ const SHEETS = {
   // Purchase Supplies: which tasks get a supplier search, and the search term (edited by CJM admin)
   SupplyMaps:  ['id', 'match', 'term', 'category', 'enabled', 'note', 'verify', 'updatedBy', 'updatedAt'],
   // Exact items saved on a task (kept for every time a recurring task comes due)
-  TaskSupplies: ['id', 'vesselId', 'taskId', 'name', 'url', 'partNumber', 'qty', 'note', 'addedBy', 'addedAt'],
+  TaskSupplies: ['id', 'vesselId', 'taskId', 'name', 'url', 'partNumber', 'qty', 'note', 'addedBy', 'addedAt', 'need'],
+  // What was ordered, by whom and when (kept even if the saved item is removed)
+  SupplyOrders: ['id', 'vesselId', 'taskId', 'itemId', 'name', 'partNumber', 'qty', 'url', 'system', 'department', 'forDue',
+                 'status', 'orderedBy', 'orderedAt', 'receivedBy', 'receivedAt', 'note',
+                 'requestedBy', 'requestedAt', 'approvedBy', 'approvedAt', 'decisionNote', 'supplier', 'orderRef', 'carrier', 'tracking', 'eta',
+                 'receivedLocation', 'replacementOf',
+                 // returns and cores
+                 'retKind', 'retStatus', 'retDue', 'retCharge', 'retRma', 'retPnOff', 'retSnOff', 'retPnOn', 'retSnOn', 'retCarrier', 'retTracking',
+                 'retCredit', 'retNote', 'retOpenedBy', 'retOpenedAt', 'retClosedBy', 'retClosedAt', 'retReminded'],
   Audit:       ['timestamp', 'userId', 'action', 'taskId', 'details', 'vesselId']
 };
 
@@ -379,6 +387,18 @@ function doPost(e) {
       adminSupplies:      () => { requireAdmin(user); return adminSupplies(); },
       addTaskSupply:      () => withLock(() => addTaskSupply(V(), user, req.taskId, req.item || {})),
       removeTaskSupply:   () => withLock(() => removeTaskSupply(V(), user, req.id)),
+      setSupplyNeed:      () => withLock(() => setSupplyNeed(V(), user, req.id, req.need)),
+      markOrdered:        () => withLock(() => markOrdered(V(), user, req.order || {})),
+      markOrderedMany:    () => withLock(() => markOrderedMany(V(), user, req.orders)),
+      requestParts:       () => withLock(() => requestParts(V(), user, req)),
+      decideParts:        () => withLock(() => decideParts(V(), user, req.ids || [req.id], !!req.approve, req.note)),
+      updateTracking:     () => withLock(() => updateTracking(V(), user, req.id, req.tracking || {})),
+      setPartsBuyer:      () => withLock(() => setPartsBuyer(V(), user, req.userId, !!req.on)),
+      setWorkStatus:      () => withLock(() => setWorkStatus(V(), user, req.id, req.status)),
+      openReturn:         () => withLock(() => openReturn(V(), user, req.id, req.ret || {})),
+      updateReturn:       () => withLock(() => updateReturn(V(), user, req.id, req.ret || {}, !!req.close)),
+      setOrderStatus:     () => withLock(() => setOrderStatus(V(), user, req.id, req.status, req.location)),
+      supplyOverview:     () => supplyOverview(V(), user, req),
       saveSupplyMap:      () => { requireAdmin(user); return withLock(() => saveSupplyMap(user, req.map || {})); },
       deleteSupplyMap:    () => { requireAdmin(user); return withLock(() => deleteSupplyMap(user, req.id)); },
       loadSupplyDefaults: () => { requireAdmin(user); return withLock(() => loadSupplyDefaults(user, req.maps)); },
@@ -719,6 +739,7 @@ function bootstrap(user, vesselId) {
       out.vessel = { id: c.vessel.id, name: c.vessel.name, type: c.vessel.type, length: c.vessel.length, homePort: c.vessel.homePort,
                      flag: c.vessel.flag || '', usage: c.vessel.usage || '', classSociety: c.vessel.classSociety || '' };
       VESSEL_DETAILS.forEach(k => out.vessel[k] = c.vessel[k] || '');
+      out.vessel.partSpots = String(c.vessel.partSpots || '').split('|').filter(Boolean);
       out.canEditBoat = c.perms.manageCrew || c.perms.editAll;
       out.rules = rulesForApp();
       out.position = c.position;
@@ -729,6 +750,8 @@ function bootstrap(user, vesselId) {
       out.canReviewWork = isVesselReviewer(c.vessel.id, user.id);
       out.pendingTaskReviews = out.canReviewWork ? pendingReviewsFor(c.vessel.id, user.id).length + pendingWorkFor(c.vessel.id, user.id).length : 0;
       out.canSubmitWork = !!c.membership && !c.perms.viewOnly;
+      out.isBuyer = isBuyer(c);
+      out.partsPending = out.isBuyer ? readTable('SupplyOrders').filter(o => o.vesselId === c.vessel.id && o.status === 'requested').length : 0;
     } catch (e) { /* not a member any more: frontend shows the vessel picker */ }
   }
   return out;
@@ -784,7 +807,8 @@ function listCrew(c) {
       const u = users[m.userId], role = roleOf(m), pr = permsFor(role);
       return { id: u.id, name: u.name, email: c.perms.contractor ? '' : u.email, position: role.title, title: role.title,
                access: role.access, accessLabel: pr.accessLabel, departments: role.depts, status: m.status,
-               joinedAt: m.joinedAt, active: isTrue(u.active), needsSetup: !u.passwordHash };
+               joinedAt: m.joinedAt, active: isTrue(u.active), needsSetup: !u.passwordHash,
+               partsBuyer: isTrue(m.partsBuyer) || role.access === 'command' };
     })
     .sort((a, b) => (ACCESS[a.access].rank - ACCESS[b.access].rank) || (titleOrder.indexOf(a.title) - titleOrder.indexOf(b.title)));
 }
@@ -1689,7 +1713,9 @@ function createTask(c, user, t) {
   insert('Tasks', task);
   audit(user.id, 'create', task.id, type + ': ' + task.title, c.vessel.id);
   if (t.note) addNote(c, user, task.id, t.note);
-  return { ok: true, task: decorate(c, task, crewNames(), user) };
+  let parts = null;
+  if (Array.isArray(t.parts) && t.parts.length) parts = requestParts(c, user, { taskId: task.id, items: t.parts, fromNewTask: true });
+  return { ok: true, task: decorate(c, task, crewNames(), user), parts: parts && parts.message };
 }
 
 function updateTask(c, user, id, changes) {
@@ -1744,6 +1770,7 @@ function completeTask(c, user, req) {
   t.lastPerformed = performed;
   t.lastPerformedBy = user.id;
   t.reminderLog = '';
+  t.workStatus = '';
   let detail;
   if (t.type === 'Issue') {
     t.state = 'Resolved';
@@ -1894,7 +1921,37 @@ function decorate(c, t, names, user) {
   out.departmentLabel = DEPT_LABELS[out.department] || '';
   out.canSignOff = canSignOff(c, user, t);
   out.canEdit = canEdit(c, user, t);
+  const x = taskExtras(c);
+  out.partsWaiting = x.parts[t.id] || 0;
+  out.latestNote = x.notes[t.id] || null;
+  out.statusLabel = out.partsWaiting && t.state === 'Open' ? 'Waiting on parts' : WORK_STATUS[t.workStatus] || '';
   return out;
+}
+
+// ── Task status: set by hand (In work, Pending, Needs review); "Waiting on parts" is automatic while parts are requested/ordered ──
+const WORK_STATUS = { in_work: 'In work', pending: 'Pending', needs_review: 'Needs review' };
+const EXTRAS = {};
+function taskExtras(c) {
+  const notes = readTable('Notes'), orders = SHEETS.SupplyOrders ? readTable('SupplyOrders') : [];
+  const hit = EXTRAS[c.vessel.id];
+  if (hit && hit.notes === notes && hit.orders === orders) return hit.data;
+  const names = crewNames();
+  const data = { parts: {}, notes: {} };
+  orders.forEach(o => { if (o.vesselId === c.vessel.id && o.taskId && ['requested', 'approved', 'ordered'].indexOf(o.status) !== -1) data.parts[o.taskId] = (data.parts[o.taskId] || 0) + 1; });
+  notes.forEach(n => { const cur = data.notes[n.taskId]; if (!cur || n.createdAt > cur.at) data.notes[n.taskId] = { text: String(n.text || '').slice(0, 160), by: names[n.userId] || '', at: n.createdAt }; });
+  EXTRAS[c.vessel.id] = { notes, orders, data };
+  return data;
+}
+
+function setWorkStatus(c, user, id, status) {
+  const t = taskIn(c, id);
+  if (c.perms.viewOnly) throw new Error('View-only access cannot change task status');
+  if (t.state !== 'Open') throw new Error('Task is closed');
+  if (status && !WORK_STATUS[status]) throw new Error('Unknown status');
+  t.workStatus = status || ''; t.workStatusBy = user.id; t.workStatusAt = nowIso();
+  update('Tasks', t._row, t);
+  audit(user.id, 'status', t.id, 'Status: ' + (WORK_STATUS[status] || 'cleared'), c.vessel.id);
+  return { ok: true, task: decorate(c, t, crewNames(), user) };
 }
 
 // ───────────────────────── REMINDERS ─────────────────────────
@@ -1946,6 +2003,7 @@ function dailyReminders() {
       sendMail(emails.join(','), v.name + ': ' + (overdue.length ? overdue.length + ' overdue, ' : '') +
                upcoming.length + ' coming due', html);
     });
+    try { coreReminders(); } catch (e) { Logger.log('Core reminders: ' + e.message); }
   } finally {
     lock.releaseLock();
   }
@@ -2163,7 +2221,7 @@ const TABLE_CACHE = {}; // lives for one request only
 
 const HEADERS_CHECKED = {};
 
-const AUTO_TABS = ['TaskReviews', 'Attachments', 'StoredFiles', 'VesselRequests', 'Rotations', 'RotationChanges', 'RotationRules', 'Handovers', 'WorkSubmissions', 'Rules', 'RuleHistory', 'SupplyMaps', 'TaskSupplies'];
+const AUTO_TABS = ['TaskReviews', 'Attachments', 'StoredFiles', 'VesselRequests', 'Rotations', 'RotationChanges', 'RotationRules', 'Handovers', 'WorkSubmissions', 'Rules', 'RuleHistory', 'SupplyMaps', 'TaskSupplies', 'SupplyOrders'];
 
 function sheet(name) {
   let sh = SpreadsheetApp.getActive().getSheetByName(name);
@@ -2681,7 +2739,7 @@ function deleteVessel(admin, id, confirmName) {
     invitations: deleteRowsWhere('Memberships', m => m.vesselId === id && m.status === 'invited'),
     activity: deleteRowsWhere('Audit', a => a.vesselId === id)
   };
-  ['Materials', 'Onboard', 'PurchaseLists', 'Rotations', 'RotationChanges', 'RotationRules', 'Handovers', 'WorkSubmissions', 'TaskSupplies'].forEach(n => { if (SHEETS[n]) counts[n.toLowerCase()] = deleteRowsWhere(n, r => r.vesselId === id && (n !== 'WorkSubmissions' || r.status === 'pending')); });
+  ['Materials', 'Onboard', 'PurchaseLists', 'Rotations', 'RotationChanges', 'RotationRules', 'Handovers', 'WorkSubmissions', 'TaskSupplies', 'SupplyOrders'].forEach(n => { if (SHEETS[n]) counts[n.toLowerCase()] = deleteRowsWhere(n, r => r.vesselId === id && (n !== 'WorkSubmissions' || r.status === 'pending')); });
   // crew: their time aboard ends today
   let crew = 0;
   readTable('Memberships').filter(m => m.vesselId === id && m.status === 'active').forEach(m => {
@@ -3988,8 +4046,8 @@ function cleanSupplyUrl(u) {
 function taskSupplyItems(c, taskId, names) {
   if (!SHEETS.TaskSupplies) return [];
   return readTable('TaskSupplies').filter(x => x.taskId === taskId && x.vesselId === c.vessel.id)
-    .map(x => ({ id: x.id, name: x.name, url: x.url, partNumber: x.partNumber, qty: x.qty, note: x.note,
-                 addedBy: (names || {})[x.addedBy] || '', addedAt: x.addedAt,
+    .map(x => ({ id: x.id, name: x.name, url: x.url, partNumber: x.partNumber, qty: x.qty, note: x.note, need: x.need || 'every',
+                 addedBy: (names || {})[x.addedBy] || '', addedAt: x.addedAt, lastOrder: lastOrderOf(x.id),
                  canRemove: x.addedBy === c.userId || c.perms.editAll || c.perms.createRoutine }));
 }
 
@@ -4003,7 +4061,7 @@ function addTaskSupply(c, user, taskId, it) {
   if (qty && !/^\d{1,4}$/.test(qty)) throw new Error('Quantity must be a number');
   if (readTable('TaskSupplies').filter(x => x.taskId === t.id).length >= 20) throw new Error('Up to 20 items per task');
   insert('TaskSupplies', { id: newId('TS'), vesselId: c.vessel.id, taskId: t.id, name, url, partNumber: clip(it.partNumber, 60),
-                           qty, note: clip(it.note, 200), addedBy: user.id, addedAt: nowIso() });
+                           qty, note: clip(it.note, 200), addedBy: user.id, addedAt: nowIso(), need: it.need === 'asNeeded' ? 'asNeeded' : 'every' });
   audit(user.id, 'supplyItem', t.id, 'Saved item: ' + name + (it.partNumber ? ' (' + clip(it.partNumber, 60) + ')' : ''), c.vessel.id);
   return { ok: true, supplyItems: taskSupplyItems(c, t.id, crewNames()) };
 }
@@ -4016,4 +4074,406 @@ function removeTaskSupply(c, user, id) {
   deleteRowsWhere('TaskSupplies', k => k.id === id);
   audit(user.id, 'supplyItemRemoved', x.taskId, 'Removed item: ' + x.name, c.vessel.id);
   return { ok: true, supplyItems: taskSupplyItems(c, x.taskId, crewNames()) };
+}
+
+// ── Orders and the needs list ──
+// Saved items marked "every" are needed each time their task is done; they fill the "Needed soon" list for tasks coming due.
+// Crew tick an item as ordered (and later received). Orders keep a copy of the item, so history survives if the item is removed.
+
+function lastOrderOf(itemId) {
+  if (!SHEETS.SupplyOrders) return null;
+  const at = (k) => k.orderedAt || k.requestedAt || '';
+  const o = readTable('SupplyOrders').filter(x => x.itemId === itemId && LIVE_ORDER.indexOf(x.status) !== -1).sort((a, b) => at(a) < at(b) ? 1 : -1)[0];
+  return o ? { id: o.id, status: o.status, at: at(o), qty: o.qty, forDue: o.forDue, tracking: o.tracking, carrier: o.carrier, eta: o.eta,
+               location: o.receivedLocation, core: o.retKind === 'core' && o.retStatus === 'pending' ? o.retDue || 'open' : '' } : null;
+}
+
+function setSupplyNeed(c, user, id, need) {
+  const x = readTable('TaskSupplies').find(k => k.id === id && k.vesselId === c.vessel.id);
+  if (!x) throw new Error('Item not found');
+  taskIn(c, x.taskId);
+  if (c.perms.viewOnly) throw new Error('View-only access cannot change items');
+  x.need = need === 'asNeeded' ? 'asNeeded' : 'every';
+  update('TaskSupplies', x._row, x);
+  return { ok: true, supplyItems: taskSupplyItems(c, x.taskId, crewNames()) };
+}
+
+
+
+/**
+ * Master list for the vessel:
+ *  - needed: "every time" items on open tasks due within `days` (default 45), with whether they are already ordered for that due date
+ *  - items:  every saved item (the vessel's parts list), with department
+ *  - orders: order history, newest first (optionally from/to dates)
+ */
+function supplyOverview(c, user, req) {
+  const days = Math.min(Math.max(Number(req.days) || 45, 1), 365);
+  const names = crewNames();
+  const tasks = {}; vesselTasks(c).forEach(t => tasks[t.id] = t);
+  const limit = addInterval(today(), days, 'days');
+  const orders = readTable('SupplyOrders').filter(o => o.vesselId === c.vessel.id && (!o.taskId || tasks[o.taskId]));
+  const items = readTable('TaskSupplies').filter(x => x.vesselId === c.vessel.id && tasks[x.taskId]);
+  const deptOf = (sys) => DEPT_LABELS[DEPARTMENTS[sys] || 'any'] || 'General';
+  // when each task was last signed off (exact time), so an order counts only for the cycle it was placed in
+  const signedOff = {};
+  readTable('Completions').forEach(k => { if (tasks[k.taskId] && (!signedOff[k.taskId] || k.loggedAt > signedOff[k.taskId])) signedOff[k.taskId] = k.loggedAt; });
+  const needed = items.filter(x => (x.need || 'every') === 'every').map(x => {
+    const t = tasks[x.taskId];
+    if (t.state !== 'Open' || !t.dueDate || t.dueDate > limit) return null;
+    const since = signedOff[t.id] || '';
+    const o = orders.filter(k => k.itemId === x.id && LIVE_ORDER.indexOf(k.status) !== -1 && (k.forDue === t.dueDate || String(k.orderedAt || k.requestedAt) > since))
+      .sort((a, b) => a.orderedAt < b.orderedAt ? 1 : -1)[0];
+    return { itemId: x.id, name: x.name, partNumber: x.partNumber, qty: x.qty, url: x.url, taskId: t.id, task: t.title, system: t.system,
+             department: deptOf(t.system), dueDate: t.dueDate, daysUntilDue: daysBetween(today(), t.dueDate),
+             order: o ? { id: o.id, status: o.status, at: o.orderedAt || o.requestedAt, by: names[o.orderedBy || o.requestedBy] || '' } : null };
+  }).filter(Boolean).sort((a, b) => a.dueDate < b.dueDate ? -1 : 1);
+  const from = req.from || '', to = req.to || '';
+  return {
+    ok: true, days, needed,
+    items: items.map(x => ({ id: x.id, name: x.name, partNumber: x.partNumber, qty: x.qty, url: x.url, need: x.need || 'every', taskId: x.taskId,
+                             task: tasks[x.taskId].title, system: tasks[x.taskId].system, department: deptOf(tasks[x.taskId].system) }))
+      .sort((a, b) => (a.department + a.name) < (b.department + b.name) ? -1 : 1),
+    isBuyer: isBuyer(c),
+    orders: orders.filter(o => { const d = String(o.orderedAt || o.requestedAt).slice(0, 10); return (!from || d >= from) && (!to || d <= to); })
+      .sort((a, b) => (a.orderedAt || a.requestedAt) < (b.orderedAt || b.requestedAt) ? 1 : -1).slice(0, 500)
+      .map(o => orderView(c, user, o, tasks, names))
+  };
+}
+
+
+// ═════════════════════════ PARTS REQUESTS → APPROVAL → ORDER → TRACKING ═════════════════════════
+// Crew request parts (from a task, at task creation, or the Needed soon list). The vessel's parts buyers (crew the Captain marks as
+// Parts buyer, plus Command) approve or decline, place the order and record supplier, order number, carrier, tracking and ETA.
+// The requester is emailed at each step. Statuses: requested → approved → ordered → received (or declined / cancelled).
+const LIVE_ORDER = ['requested', 'approved', 'ordered', 'received'];
+const ORDER_STATUS = ['requested', 'approved', 'ordered', 'received', 'declined', 'cancelled'];
+
+function isBuyer(c) {
+  return c.isAdmin || c.perms.access === 'command' || !!(c.membership && isTrue(c.membership.partsBuyer));
+}
+
+function requireBuyer(c) {
+  if (!isBuyer(c)) throw new Error('Only the Captain or a parts buyer can approve and order parts');
+}
+
+function vesselBuyers(vesselId) {
+  const users = {}; readTable('Users').forEach(u => users[u.id] = u);
+  return readTable('Memberships').filter(m => m.vesselId === vesselId && m.status === 'active' && users[m.userId] && isTrue(users[m.userId].active) &&
+    (isTrue(m.partsBuyer) || roleOf(m).access === 'command')).map(m => users[m.userId]);
+}
+
+function setPartsBuyer(c, user, userId, on) {
+  requireManager(c);
+  const m = readTable('Memberships').find(x => x.vesselId === c.vessel.id && x.userId === userId && x.status === 'active');
+  if (!m) throw new Error('Not on this vessel');
+  m.partsBuyer = on ? 'TRUE' : 'FALSE';
+  update('Memberships', m._row, m);
+  audit(user.id, 'partsBuyer', '', userName(userId) + (on ? ' can now approve and order parts' : ' no longer orders parts'), c.vessel.id);
+  return { ok: true, crew: listCrew(c) };
+}
+
+/** Public tracking page for common carriers (else none). */
+function trackingLink(carrier, number) {
+  const n = encodeURIComponent(String(number || '').trim());
+  if (!n) return '';
+  const k = String(carrier || '').toLowerCase();
+  if (/ups/.test(k)) return 'https://www.ups.com/track?tracknum=' + n;
+  if (/fedex/.test(k)) return 'https://www.fedex.com/fedextrack/?trknbr=' + n;
+  if (/usps|postal/.test(k)) return 'https://tools.usps.com/go/TrackConfirmAction?tLabels=' + n;
+  if (/dhl/.test(k)) return 'https://www.dhl.com/us-en/home/tracking/tracking-express.html?tracking-id=' + n;
+  if (/amazon/.test(k)) return 'https://www.amazon.com/progress-tracker/package?trackingId=' + n;
+  return '';
+}
+
+function orderView(c, user, o, tasks, names) {
+  return { id: o.id, name: o.name, partNumber: o.partNumber, qty: o.qty, url: o.url, task: ((tasks || {})[o.taskId] || {}).title || '', taskId: o.taskId,
+           itemId: o.itemId, system: o.system, department: o.department || 'General', status: o.status, note: o.note,
+           requestedAt: o.requestedAt, requestedBy: names[o.requestedBy] || '', approvedAt: o.approvedAt, approvedBy: names[o.approvedBy] || '',
+           decisionNote: o.decisionNote, orderedAt: o.orderedAt, orderedBy: names[o.orderedBy] || '', receivedAt: o.receivedAt, receivedBy: names[o.receivedBy] || '',
+           supplier: o.supplier, orderRef: o.orderRef, carrier: o.carrier, tracking: o.tracking, eta: o.eta, trackingUrl: trackingLink(o.carrier, o.tracking),
+           receivedLocation: o.receivedLocation, replacementOf: o.replacementOf,
+           ret: o.retKind ? { kind: o.retKind, status: o.retStatus, due: o.retDue, charge: o.retCharge, rma: o.retRma, pnOff: o.retPnOff, snOff: o.retSnOff,
+                  pnOn: o.retPnOn, snOn: o.retSnOn, carrier: o.retCarrier, tracking: o.retTracking, trackingUrl: trackingLink(o.retCarrier, o.retTracking),
+                  credit: o.retCredit, note: o.retNote, openedBy: names[o.retOpenedBy] || '', openedAt: o.retOpenedAt, closedBy: names[o.retClosedBy] || '', closedAt: o.retClosedAt,
+                  daysLeft: o.retDue && o.retStatus === 'pending' ? daysBetween(today(), o.retDue) : null } : null,
+           mine: o.requestedBy === user.id,
+           canCancel: (o.status === 'requested' && o.requestedBy === user.id) || (['requested', 'approved', 'ordered'].indexOf(o.status) !== -1 && isBuyer(c)) };
+}
+
+function orderRow(c, user, task, item, it, status) {
+  const name = clip(item ? item.name : it.name, 120);
+  if (!name) throw new Error('Name each part');
+  const qty = String(it.qty || (item && item.qty) || '').trim();
+  if (qty && !/^\d{1,4}$/.test(qty)) throw new Error('Quantity must be a number (' + name + ')');
+  const system = task ? task.system : clip(it.system, 60);
+  const now = nowIso();
+  return { id: newId('PO'), vesselId: c.vessel.id, taskId: task ? task.id : '', itemId: item ? item.id : '', name,
+    partNumber: clip(item ? item.partNumber : it.partNumber, 60), qty, url: item ? item.url : (it.url ? cleanSupplyUrl(it.url) : ''),
+    system, department: DEPT_LABELS[DEPARTMENTS[system] || 'any'] || 'General', forDue: task ? task.dueDate : '', status,
+    orderedBy: '', orderedAt: '', receivedBy: '', receivedAt: '', note: clip(it.note, 200),
+    requestedBy: user.id, requestedAt: now, approvedBy: status === 'approved' ? user.id : '', approvedAt: status === 'approved' ? now : '',
+    decisionNote: '', supplier: '', orderRef: '', carrier: '', tracking: '', eta: '' };
+}
+
+function partsLines(rows) {
+  return '<ul>' + rows.map(r => '<li><b>' + esc(r.name) + '</b>' + (r.qty ? ' × ' + esc(r.qty) : '') + (r.partNumber ? ' (part ' + esc(r.partNumber) + ')' : '') +
+    (r.note ? ' – ' + esc(r.note) : '') + '</li>').join('') + '</ul>';
+}
+
+/**
+ * req: { taskId?, items: [{ itemId? | name, partNumber, qty, url, note, system, saveToTask, need }] }
+ * Items with saveToTask are also kept on the task (Purchase supplies) for next time. A buyer's own request is approved straight away.
+ */
+function requestParts(c, user, req) {
+  if (c.perms.viewOnly) throw new Error('View-only access cannot request parts');
+  const items = Array.isArray(req.items) ? req.items.filter(x => x && (x.itemId || String(x.name || '').trim())) : [];
+  if (!items.length) throw new Error('Add at least one part');
+  if (items.length > 40) throw new Error('Up to 40 parts per request');
+  const task = req.taskId ? taskIn(c, req.taskId) : null;
+  const buyer = isBuyer(c);
+  const rows = items.map(it => {
+    let item = it.itemId ? readTable('TaskSupplies').find(k => k.id === it.itemId && k.vesselId === c.vessel.id) : null;
+    if (it.itemId && !item) throw new Error('Saved item not found');
+    const t = item ? taskIn(c, item.taskId) : task;
+    if (!item && t && it.saveToTask) {
+      item = addTaskSupplyRow(c, user, t, it);
+    }
+    return orderRow(c, user, t, item, it, buyer ? 'approved' : 'requested');
+  });
+  insertMany('SupplyOrders', rows);
+  audit(user.id, 'partsRequest', task ? task.id : '', rows.length + ' part' + (rows.length > 1 ? 's' : '') + (buyer ? ' approved to order' : ' requested') + ': ' +
+        rows.map(r => r.name).join(', ').slice(0, 200), c.vessel.id);
+  if (!buyer) {
+    const to = vesselBuyers(c.vessel.id).filter(u => u.id !== user.id).map(u => u.email).join(',');
+    sendMail(to, 'Parts request: ' + user.name + (task ? ', ' + task.title : ''), '<p><b>' + esc(user.name) + '</b> requested parts' +
+      (task ? ' for <b>' + esc(task.title) + '</b>' : '') + ' on ' + esc(c.vessel.name) + ':</p>' + partsLines(rows) +
+      '<p>Approve or decline them in Marine supplies → Requests.</p>' + appLink());
+  }
+  return { ok: true, count: rows.length,
+           message: buyer ? rows.length + ' part' + (rows.length > 1 ? 's' : '') + ' added to the order list (approved).'
+                          : rows.length + ' part' + (rows.length > 1 ? 's' : '') + ' requested. The parts buyer or Captain will approve and order ' + (rows.length > 1 ? 'them' : 'it') + '.' };
+}
+
+function addTaskSupplyRow(c, user, t, it) {
+  const row = { id: newId('TS'), vesselId: c.vessel.id, taskId: t.id, name: clip(it.name, 120), url: cleanSupplyUrl(it.url), partNumber: clip(it.partNumber, 60),
+                qty: String(it.qty || '').trim(), note: clip(it.note, 200), addedBy: user.id, addedAt: nowIso(), need: it.need === 'asNeeded' ? 'asNeeded' : 'every' };
+  if (!row.name) throw new Error('Name each part');
+  insert('TaskSupplies', row);
+  return row;
+}
+
+function decideParts(c, user, ids, approve, note) {
+  requireBuyer(c);
+  if (!approve && !String(note || '').trim()) throw new Error('Say why the request is declined');
+  const all = readTable('SupplyOrders');
+  const rows = ids.map(id => all.find(o => o.id === id && o.vesselId === c.vessel.id && o.status === 'requested'));
+  if (!rows.length || rows.some(r => !r)) throw new Error('Request not found or already handled');
+  const now = nowIso();
+  rows.forEach(r => { r.status = approve ? 'approved' : 'declined'; r.approvedBy = user.id; r.approvedAt = now; r.decisionNote = clip(note, 300); update('SupplyOrders', r._row, r); });
+  audit(user.id, approve ? 'partsApproved' : 'partsDeclined', rows[0].taskId, rows.map(r => r.name).join(', ').slice(0, 200), c.vessel.id);
+  notifyRequesters(c, user, rows, approve ? 'Parts approved' : 'Parts declined',
+    approve ? 'approved these parts. They will be ordered:' : 'declined these parts' + (note ? ' (' + esc(clip(note, 300)) + ')' : '') + ':');
+  return { ok: true, count: rows.length };
+}
+
+function notifyRequesters(c, user, rows, subject, what, extra) {
+  const users = {}; readTable('Users').forEach(u => users[u.id] = u);
+  const by = {};
+  rows.filter(r => r.requestedBy && r.requestedBy !== user.id).forEach(r => (by[r.requestedBy] = by[r.requestedBy] || []).push(r));
+  Object.keys(by).forEach(uid => {
+    const u = users[uid];
+    if (!u || !isTrue(u.active)) return;
+    sendMail(u.email, subject + ': ' + by[uid].map(r => r.name).join(', ').slice(0, 80),
+      '<p>' + esc(user.name) + ' ' + what + '</p>' + partsLines(by[uid]) + (extra || '') + appLink());
+  });
+}
+
+/**
+ * Record an order. o: { id } for an approved (or requested) request, { itemId } for a saved item, or { name, … } for anything else.
+ * Optional: supplier, orderRef, carrier, tracking, eta, qty.
+ */
+function markOrdered(c, user, o) {
+  requireBuyer(c);
+  let row;
+  if (o.id) {
+    row = readTable('SupplyOrders').find(k => k.id === o.id && k.vesselId === c.vessel.id);
+    if (!row || ['requested', 'approved'].indexOf(row.status) === -1) throw new Error('Request not found or already ordered');
+    if (row.status === 'requested') { row.approvedBy = user.id; row.approvedAt = nowIso(); }
+  } else {
+    const item = o.itemId ? readTable('TaskSupplies').find(k => k.id === o.itemId && k.vesselId === c.vessel.id) : null;
+    if (o.itemId && !item) throw new Error('Item not found');
+    const taskId = item ? item.taskId : o.taskId;
+    const task = taskId ? taskIn(c, taskId) : null;
+    // an open request for this saved item is ordered rather than duplicated
+    row = item && readTable('SupplyOrders').find(k => k.itemId === item.id && (k.status === 'requested' || k.status === 'approved'));
+    if (!row) { row = orderRow(c, user, task, item, o, 'approved'); insert('SupplyOrders', row); row = readTable('SupplyOrders').find(k => k.id === row.id); }
+  }
+  const qty = String(o.qty || row.qty || '').trim();
+  if (qty && !/^\d{1,4}$/.test(qty)) throw new Error('Quantity must be a number');
+  Object.assign(row, { status: 'ordered', qty, orderedBy: user.id, orderedAt: nowIso(),
+    supplier: clip(o.supplier, 80) || row.supplier || (row.url && /amazon\./i.test(row.url) ? 'Amazon' : ''), orderRef: clip(o.orderRef, 80) || row.orderRef,
+    carrier: clip(o.carrier, 40) || row.carrier, tracking: clip(o.tracking, 80) || row.tracking, eta: o.eta || row.eta, note: o.note ? clip(o.note, 200) : row.note });
+  if (row.eta) validateDate(row.eta);
+  if (!row.approvedBy) { row.approvedBy = user.id; row.approvedAt = row.orderedAt; }
+  if (o.core) {
+    if (o.coreDue) validateDate(o.coreDue);
+    Object.assign(row, { retKind: 'core', retStatus: 'pending', retDue: o.coreDue || '', retCharge: clip(o.coreCharge, 20), retPnOn: row.partNumber || '',
+                         retOpenedBy: user.id, retOpenedAt: nowIso(), retReminded: '' });
+  }
+  update('SupplyOrders', row._row, row);
+  audit(user.id, 'supplyOrdered', row.taskId, 'Ordered: ' + row.name + (qty ? ' x' + qty : '') + (row.supplier ? ' from ' + row.supplier : '') +
+        (row.tracking ? ', tracking ' + row.tracking : ''), c.vessel.id);
+  const t = trackingLink(row.carrier, row.tracking);
+  notifyRequesters(c, user, [row], 'Parts ordered', 'ordered:', (row.eta ? '<p>Expected ' + row.eta + '.</p>' : '') +
+    (row.tracking ? '<p>Tracking: ' + (t ? '<a href="' + t + '">' + esc(row.carrier + ' ' + row.tracking) + '</a>' : esc(row.carrier + ' ' + row.tracking)) + '</p>' : ''));
+  return Object.assign({ ok: true, order: row }, row.taskId ? { supplyItems: taskSupplyItems(c, row.taskId, crewNames()) } : {});
+}
+
+/** Several at once (after "Add to Amazon cart" when the buyer confirms the order was placed). */
+function markOrderedMany(c, user, list) {
+  requireBuyer(c);
+  if (!Array.isArray(list) || !list.length) throw new Error('Nothing to record');
+  if (list.length > 60) throw new Error('Up to 60 items at a time');
+  const done = list.map(o => markOrdered(c, user, Object.assign({}, o, { note: o.note || 'Sent to Amazon cart' })).order);
+  return { ok: true, count: done.length };
+}
+
+function updateTracking(c, user, id, t) {
+  requireBuyer(c);
+  const row = readTable('SupplyOrders').find(k => k.id === id && k.vesselId === c.vessel.id);
+  if (!row || ['ordered', 'received'].indexOf(row.status) === -1) throw new Error('Order not found');
+  const had = row.tracking;
+  ['supplier', 'orderRef', 'carrier', 'tracking'].forEach(k => { if (t[k] !== undefined) row[k] = clip(t[k], 80); });
+  if (t.eta !== undefined) { if (t.eta) validateDate(t.eta); row.eta = t.eta || ''; }
+  update('SupplyOrders', row._row, row);
+  audit(user.id, 'supplyTracking', row.taskId, row.name + ': ' + [row.carrier, row.tracking, row.eta && 'ETA ' + row.eta].filter(Boolean).join(' '), c.vessel.id);
+  if (row.tracking && row.tracking !== had) {
+    const l = trackingLink(row.carrier, row.tracking);
+    notifyRequesters(c, user, [row], 'Tracking for your parts', 'added tracking for:',
+      '<p>' + (l ? '<a href="' + l + '">' + esc(row.carrier + ' ' + row.tracking) + '</a>' : esc(row.carrier + ' ' + row.tracking)) + (row.eta ? ', expected ' + row.eta : '') + '</p>');
+  }
+  return { ok: true };
+}
+
+function setOrderStatus(c, user, id, status, location) {
+  if (['received', 'cancelled'].indexOf(status) === -1) throw new Error('Unknown status');
+  const o = readTable('SupplyOrders').find(k => k.id === id && k.vesselId === c.vessel.id);
+  if (!o) throw new Error('Order not found');
+  if (o.taskId) taskIn(c, o.taskId);
+  if (c.perms.viewOnly) throw new Error('View-only access cannot change orders');
+  if (status === 'received') {
+    if (o.status !== 'ordered') throw new Error('Only ordered parts can be received');
+    o.receivedBy = user.id; o.receivedAt = nowIso(); o.receivedLocation = clip(location, 80);
+    if (o.receivedLocation) rememberSpot(c, o.receivedLocation);
+  } else {
+    const own = o.status === 'requested' && o.requestedBy === user.id;
+    if (!(own || (isBuyer(c) && ['requested', 'approved', 'ordered'].indexOf(o.status) !== -1))) throw new Error('Only the parts buyer or Captain can cancel this');
+  }
+  o.status = status;
+  update('SupplyOrders', o._row, o);
+  audit(user.id, 'supplyOrder', o.taskId, o.name + ': ' + status + (o.receivedLocation && status === 'received' ? ' (left at ' + o.receivedLocation + ')' : ''), c.vessel.id);
+  if (status === 'received') {
+    notifyRequesters(c, user, [o], 'Parts arrived', 'received:', o.receivedLocation ? '<p>Left at: <b>' + esc(o.receivedLocation) + '</b></p>' : '');
+  }
+  return { ok: true };
+}
+
+/** Remembers where parts are usually left aboard (for the "left at" suggestions). */
+function rememberSpot(c, spot) {
+  const v = readTable('Vessels').find(x => x.id === c.vessel.id);
+  const spots = String(v.partSpots || '').split('|').filter(Boolean);
+  if (spots.some(x => x.toLowerCase() === spot.toLowerCase())) return;
+  v.partSpots = [spot].concat(spots).slice(0, 30).join('|');
+  update('Vessels', v._row, v);
+}
+
+// ═════════════════════════ RETURNS AND CORES ═════════════════════════
+// A core is flagged when the part is ordered (charge, return-by date). Wrong, damaged or other returns are opened after the part
+// arrives. Each records RMA, part and serial numbers coming off and going on (any can be "N/A"), return carrier and tracking,
+// and the refund or core credit. A buyer closes it. A wrong part can reopen the request so the right one is ordered.
+// Cores due back get reminders 7 and 2 days before, then every few days while overdue.
+const RETURN_KINDS = { core: 'Core return', wrong: 'Wrong part', damaged: 'Damaged or faulty', other: 'Other return' };
+const RET_FIELDS = { rma: 'retRma', pnOff: 'retPnOff', snOff: 'retSnOff', pnOn: 'retPnOn', snOn: 'retSnOn', carrier: 'retCarrier',
+                     tracking: 'retTracking', credit: 'retCredit', note: 'retNote', charge: 'retCharge' };
+
+function applyRet(row, r) {
+  Object.keys(RET_FIELDS).forEach(k => { if (r[k] !== undefined) row[RET_FIELDS[k]] = clip(r[k], k === 'note' ? 300 : 80); });
+  if (r.due !== undefined) { if (r.due) validateDate(r.due); row.retDue = r.due || ''; }
+}
+
+function openReturn(c, user, id, r) {
+  if (c.perms.viewOnly) throw new Error('View-only access cannot open returns');
+  const row = readTable('SupplyOrders').find(k => k.id === id && k.vesselId === c.vessel.id);
+  if (!row || ['ordered', 'received'].indexOf(row.status) === -1) throw new Error('Only ordered or received parts can be returned');
+  if (row.taskId) taskIn(c, row.taskId);
+  if (row.retKind && row.retStatus === 'pending') throw new Error('A return is already open for this part');
+  const kind = RETURN_KINDS[r.kind] ? r.kind : 'other';
+  row.retKind = kind; row.retStatus = 'pending'; row.retOpenedBy = user.id; row.retOpenedAt = nowIso(); row.retClosedBy = ''; row.retClosedAt = ''; row.retReminded = '';
+  applyRet(row, r);
+  if (!row.retPnOn && row.partNumber) row.retPnOn = row.partNumber;
+  update('SupplyOrders', row._row, row);
+  let replacement = null;
+  if (kind === 'wrong' && r.reorder) {
+    replacement = Object.assign({}, orderRow(c, user, row.taskId ? taskIn(c, row.taskId) : null, null,
+      { name: row.name, partNumber: r.correctPartNumber || row.partNumber, qty: row.qty, url: row.url, system: row.system,
+        note: 'Replacement: wrong part received' + (r.note ? ' (' + clip(r.note, 120) + ')' : '') }, isBuyer(c) ? 'approved' : 'requested'), { replacementOf: row.id, itemId: row.itemId });
+    insert('SupplyOrders', replacement);
+  }
+  audit(user.id, 'returnOpened', row.taskId, RETURN_KINDS[kind] + ': ' + row.name + (row.retRma ? ', RMA ' + row.retRma : '') + (replacement ? ' (replacement requested)' : ''), c.vessel.id);
+  if (!isBuyer(c)) {
+    sendMail(vesselBuyers(c.vessel.id).filter(u => u.id !== user.id).map(u => u.email).join(','), RETURN_KINDS[kind] + ': ' + row.name,
+      '<p>' + esc(user.name) + ' opened a return (' + esc(RETURN_KINDS[kind]) + ') for <b>' + esc(row.name) + '</b> on ' + esc(c.vessel.name) + '.</p>' +
+      (row.retNote ? '<p><i>' + esc(row.retNote) + '</i></p>' : '') + (replacement ? '<p>A replacement was requested.</p>' : '') +
+      '<p>See Marine supplies → Returns.</p>' + appLink());
+  }
+  return { ok: true, replacementId: replacement ? replacement.id : '' };
+}
+
+function updateReturn(c, user, id, r, close) {
+  if (c.perms.viewOnly) throw new Error('View-only access cannot change returns');
+  const row = readTable('SupplyOrders').find(k => k.id === id && k.vesselId === c.vessel.id && k.retKind);
+  if (!row) throw new Error('Return not found');
+  if (close && !isBuyer(c)) throw new Error('Only the Captain or a parts buyer can close a return');
+  applyRet(row, r);
+  if (close) { row.retStatus = 'closed'; row.retClosedBy = user.id; row.retClosedAt = nowIso(); }
+  if (r.reopen && isBuyer(c)) { row.retStatus = 'pending'; row.retClosedBy = ''; row.retClosedAt = ''; }
+  update('SupplyOrders', row._row, row);
+  audit(user.id, close ? 'returnClosed' : 'returnUpdated', row.taskId, RETURN_KINDS[row.retKind] + ': ' + row.name +
+        (row.retTracking ? ', return tracking ' + row.retTracking : '') + (row.retCredit ? ', credit ' + row.retCredit : ''), c.vessel.id);
+  return { ok: true };
+}
+
+/** Called from the daily reminders: cores due back. */
+function coreReminders() {
+  if (!SHEETS.SupplyOrders) return 0;
+  const t = today();
+  const users = {}; readTable('Users').forEach(u => users[u.id] = u);
+  const vessels = {}; readTable('Vessels').filter(v => isTrue(v.active)).forEach(v => vessels[v.id] = v);
+  let sent = 0;
+  readTable('SupplyOrders').filter(o => o.retKind === 'core' && o.retStatus === 'pending' && o.retDue && vessels[o.vesselId]).forEach(o => {
+    const d = daysBetween(t, o.retDue);
+    let log = {};
+    try { log = o.retReminded ? JSON.parse(o.retReminded) : {}; } catch (e) {}
+    if (log.due !== o.retDue) log = { due: o.retDue, sent: [], lastOverdue: '' };
+    let why = '';
+    if (d < 0) {
+      if (!log.lastOverdue || daysBetween(log.lastOverdue, t) >= CONFIG.OVERDUE_REMIND_EVERY) { log.lastOverdue = t; why = Math.abs(d) + ' day' + (Math.abs(d) === 1 ? '' : 's') + ' OVERDUE'; }
+    } else {
+      const hit = [7, 2].filter(m => d <= m && log.sent.indexOf(m) === -1);
+      if (hit.length) { log.sent = log.sent.concat(hit); why = d === 0 ? 'due today' : 'due in ' + d + ' day' + (d === 1 ? '' : 's'); }
+    }
+    if (!why) return;
+    o.retReminded = JSON.stringify(log);
+    update('SupplyOrders', o._row, o);
+    const v = vessels[o.vesselId];
+    const to = vesselBuyers(v.id).map(u => u.email);
+    if (o.requestedBy && users[o.requestedBy] && isTrue(users[o.requestedBy].active)) to.push(users[o.requestedBy].email);
+    sendMail(to.filter((e, i) => to.indexOf(e) === i).join(','), 'Core return ' + why + ': ' + o.name + ' (' + v.name + ')',
+      '<p>The core for <b>' + esc(o.name) + '</b> must be back by <b>' + o.retDue + '</b> (' + why + ').</p>' +
+      (o.retCharge ? '<p>Core charge: ' + esc(o.retCharge) + '</p>' : '') +
+      '<p>Part off: ' + esc(o.retPnOff || '—') + ' / serial ' + esc(o.retSnOff || '—') + '<br>Part on: ' + esc(o.retPnOn || '—') + ' / serial ' + esc(o.retSnOn || '—') + '</p>' +
+      '<p>Record the return tracking and close it in Marine supplies → Returns.</p>' + appLink());
+    sent++;
+  });
+  return sent;
 }

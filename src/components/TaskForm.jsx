@@ -22,6 +22,9 @@ export default function TaskForm({ initial, crew, perms, rules, onClose, onSaved
   const isIssue = f.type === 'Issue';
   const [jobId, setJobId] = useState('');
   const [basis, setBasis] = useState('');
+  const [parts, setParts] = useState([]);
+  const blankPart = () => ({ name: '', partNumber: '', qty: '', url: '', saveToTask: f.type !== 'Issue' && !!f.recurring });
+  const setPart = (i, k, v) => setParts(parts.map((p, j) => (j === i ? { ...p, [k]: v } : p)));
   const commonJobs = JOBS.map((j) => withRule(j, rules)).filter((j) => j && (!f.system || j.system === f.system) && jobAllowed(perms, j.system));
   const jobGroups = commonJobs.reduce((g, j) => { (g[j.system] = g[j.system] || []).push(j); return g; }, {});
   function pickJob(id) {
@@ -47,8 +50,9 @@ export default function TaskForm({ initial, crew, perms, rules, onClose, onSaved
       };
       const r = editing
         ? await call('updateTask', { id: initial.id, task })
-        : await call('createTask', { task: { ...task, type: f.type, note: f.note, ...(jobId ? { ruleId: (commonJobs.find((x) => x.id === jobId) || {}).ruleId, basis: 'recommended' } : { basis }) } });
-      onSaved(r.task);
+        : await call('createTask', { task: { ...task, type: f.type, note: f.note, ...(jobId ? { ruleId: (commonJobs.find((x) => x.id === jobId) || {}).ruleId, basis: 'recommended' } : { basis }),
+            parts: parts.filter((p) => p.name.trim()) } });
+      onSaved(r.task, r.parts);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -159,6 +163,30 @@ export default function TaskForm({ initial, crew, perms, rules, onClose, onSaved
           <label>First note (optional)
             <textarea rows={2} value={f.note} onChange={set('note')} />
           </label>
+        )}
+
+        {!editing && (
+          <fieldset className="recur parts-needed">
+            <legend>Parts needed <span className="opt">(optional)</span></legend>
+            {parts.length === 0 && <p className="hint">Need parts for this {isIssue ? 'issue' : 'job'}? Add them and they go to the parts buyer or Captain to approve and order.</p>}
+            {parts.map((p, i) => (
+              <div key={i} className="part-row">
+                <div className="two">
+                  <label>Part<input value={p.name} onChange={(e) => setPart(i, 'name', e.target.value)} placeholder="Hydraulic hose 1/2 in x 2 m" /></label>
+                  <div className="two">
+                    <label><span>Part no. <span className="opt">(opt.)</span></span><input value={p.partNumber} onChange={(e) => setPart(i, 'partNumber', e.target.value)} /></label>
+                    <label>Qty<input inputMode="numeric" value={p.qty} onChange={(e) => setPart(i, 'qty', e.target.value)} placeholder="1" /></label>
+                  </div>
+                </div>
+                <label><span>Link <span className="opt">(optional: Amazon or any supplier)</span></span><input type="url" value={p.url} onChange={(e) => setPart(i, 'url', e.target.value)} placeholder="https://" /></label>
+                <div className="part-row-foot">
+                  <label className="check"><input type="checkbox" checked={p.saveToTask} onChange={(e) => setPart(i, 'saveToTask', e.target.checked)} /> Keep on this task for next time</label>
+                  <button type="button" className="link danger" onClick={() => setParts(parts.filter((_, j) => j !== i))}>Remove</button>
+                </div>
+              </div>
+            ))}
+            <button type="button" className="link" onClick={() => setParts([...parts, blankPart()])}>{parts.length ? 'Add another part' : 'Add a part'}</button>
+          </fieldset>
         )}
 
         {error && <div className="alert">{error}</div>}

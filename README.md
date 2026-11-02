@@ -68,6 +68,53 @@ React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
 5. Web addresses typed or pasted in notes, descriptions, resolutions and the activity log are clickable.
 6. CJM admin tab should show `Google Script version: 2.5 (photos and files on notes)`.
 
+## Upgrade to 4.0 (task status, returns and cores)
+Paste Code.gs → save → Manage deployments → pencil → New version → Deploy, then upload this folder to GitHub.
+Tasks, Vessels and SupplyOrders get extra columns on their own. The core reminders run inside the existing daily reminder.
+1. **Task status**: In work, Pending, Needs review (tap to set or clear, anyone but view-only). **Waiting on parts** turns on by itself while
+   any part for the task is requested, approved or on order, and goes away when they are all received. Signing off clears the status.
+   Status shows in the task, on task rows and on the Board.
+2. **Board**: five blocks (Overdue, Due within 10 days, On schedule, Open issues, Waiting on parts). Tap one to list just those tasks, each with
+   its status and latest note; "Back to board" returns.
+3. **Received** asks where the part was left (optional; the boat's usual spots are suggested). Shown on the order and the task, and emailed
+   to the person who asked.
+4. **Cores**: when marking ordered, tick Core return with the core charge and return-by date. Reminders go to the buyers and the requester
+   7 and 2 days before, then every few days while overdue (it turns red).
+5. **Returns**: Ordered → Return (Wrong part, Damaged or faulty, Core, Other). RMA no., part no. and serial no. coming off and going on,
+   return carrier and tracking, refund or credit, note. Any field can be N/A; none is required. A wrong part can request the right one
+   (optionally a different part no.). Marine supplies → **Returns & cores** lists open and closed; a buyer closes them.
+
+## Upgrade to 3.9 (parts requests, approval and tracking)
+Paste Code.gs → save → Manage deployments → pencil → New version → Deploy, then upload this folder to GitHub.
+Memberships and SupplyOrders get extra columns on their own.
+1. **Parts buyers**: Crew tab → "Make parts buyer" (Captain/Owner). Command (Captain, Staff Captain) are always buyers.
+2. **Parts needed** on New task and Report issue: part, part number, quantity, optional link, "keep on this task for next time".
+3. Crew who are not buyers **request** parts (from the new task form, Purchase supplies → Request / Request all / Save and request,
+   Needed soon → Request, Ordered → Request a part). Buyers are emailed; the Marine supplies tab shows a badge.
+4. **Marine supplies → Requests** (buyers): approve (one or several), decline with a reason, then **Mark ordered** with supplier, order no.,
+   carrier, tracking no. and expected date; or "Add approved to Amazon cart". A buyer's own request is approved straight away.
+5. The requester is emailed when approved, declined, ordered (with the carrier tracking link) and when tracking changes; they follow
+   it under My requests and Ordered. Anyone aboard can mark parts received. Buyers can add or edit tracking later (Ordered → Add tracking).
+6. Ordering, ticking Needed soon and the Amazon cart buttons are for buyers only.
+
+## Upgrade to 3.8 (send list to Amazon cart)
+Paste Code.gs → save → Manage deployments → pencil → New version → Deploy, then upload this folder to GitHub.
+- **Needed soon → "Add everything to Amazon cart"** and, in a task with 2+ saved items, **"Add all to Amazon cart"**: one link
+  (20 items per link) with each item's Amazon product code (from its saved /dp/ link) and quantity, plus AssociateTag while the tag is on.
+  Amazon shows a confirmation page and adds them to the signed-in buyer's own cart.
+- Afterwards the app asks **"Did you place the order on Amazon?"**; Yes records them all as ordered. Items without an Amazon product link
+  (other suppliers, or saved without a link) are named so crew use Shop for them.
+- The cart link uses Amazon's older "Add to Cart form" format carried over from the testing copy; check it on a real cart before relying on it.
+
+## Upgrade to 3.7 (supply orders and needs list)
+Paste Code.gs → save → Manage deployments → pencil → New version → Deploy, then upload this folder to GitHub (SupplyOrders tab is created on its own).
+- Removing a saved item asks first ("Remove … from this task? … Past orders are kept").
+- Each saved item is **Every time** (needed whenever the task is done) or **As needed**; tap the tag to switch. **Mark ordered** records an order with quantity.
+- **Marine supplies** on a vessel now has: **Needed soon** (filled automatically from "every time" items on tasks due in the next 2 weeks to 90 days,
+  tick = ordered, then Received; resets when the task is signed off), **Ordered** (history by date, department and status, received/cancel,
+  "Log an order" for things not on a task, CSV download), **Parts list** (all saved items by department) and **Shop**.
+- Department comes from the task's system (Engineering, Deck, Interior, Galley, Medical, Security, General).
+
 ## Upgrade to 3.6 (suggested and saved supply items)
 Paste Code.gs → save → Manage deployments → pencil → New version → Deploy, then upload this folder to GitHub (TaskSupplies tab is created on its own).
 - **Purchase supplies** now shows on every task. It suggests up to 3 items from the task's title and description (admin search first,

@@ -1,5 +1,7 @@
 import BasisChip from './BasisChip.jsx';
 import { PurchaseSupplies } from './Supplies.jsx';
+
+const WORK = { in_work: 'In work', pending: 'Pending', needs_review: 'Needs review' };
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import Modal from './Modal.jsx';
 import { call } from '../api.js';
@@ -8,7 +10,7 @@ import { AttachmentList } from './Attachments.jsx';
 import { ACCEPT, MAX_FILES, prepareFile } from '../files.js';
 import { STATUS, dueText, everyText, fmtDate, fmtStamp, todayISO } from '../util.js';
 
-export default function TaskDetail({ id, onClose, onChanged, onEdit, supplies }) {
+export default function TaskDetail({ id, onClose, onChanged, onEdit, supplies, isBuyer }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
@@ -22,6 +24,11 @@ export default function TaskDetail({ id, onClose, onChanged, onEdit, supplies })
   const load = useCallback(() => call('getTask', { id }).then((r) => { setData(r); setError(''); })
     .catch((e) => setError(e.message)), [id]);
   useEffect(() => { load(); }, [load]);
+  const [statusBusy, setStatusBusy] = useState(false);
+  async function setStatus(status) {
+    setStatusBusy(true); setError('');
+    try { await call('setWorkStatus', { id, status }); await load(); onChanged(); } catch (e) { setError(e.message); } finally { setStatusBusy(false); }
+  }
 
   async function run(fn) {
     setBusy(true);
@@ -82,6 +89,16 @@ export default function TaskDetail({ id, onClose, onChanged, onEdit, supplies })
         <b>{dueText(t)}</b>
         <span>{STATUS[t.color]}</span>
       </div>
+      {open && (
+        <div className="work-status">
+          <span className="ws-label">Status</span>
+          {t.partsWaiting > 0 && <span className="ws-chip ws-parts on" title="Set automatically while parts are requested or on order">Waiting on parts ({t.partsWaiting})</span>}
+          {Object.entries(WORK).map(([k, l]) => (
+            <button key={k} type="button" className={`ws-chip ws-${k} ${t.workStatus === k ? 'on' : ''}`} disabled={statusBusy}
+              onClick={() => setStatus(t.workStatus === k ? '' : k)}>{l}</button>
+          ))}
+        </div>
+      )}
 
       <dl className="facts">
         <div><dt>Type</dt><dd>{isIssue ? 'Issue' : 'Routine maintenance'}</dd></div>
@@ -95,7 +112,7 @@ export default function TaskDetail({ id, onClose, onChanged, onEdit, supplies })
       </dl>
 
       {t.description && <p className="desc"><Linkify text={t.description} /></p>}
-      <PurchaseSupplies task={t} supplies={supplies} saved={data.supplyItems} canAdd />
+      <PurchaseSupplies task={t} supplies={supplies} saved={data.supplyItems} canAdd isBuyer={isBuyer} />
       {t.resolution && <div className="resolution"><b>Resolution</b><p><Linkify text={t.resolution} /></p></div>}
 
       {error && <div className="alert">{error}</div>}
