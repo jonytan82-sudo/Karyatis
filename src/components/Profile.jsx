@@ -90,11 +90,11 @@ export default function Profile({ user, onChanged, startSub, onJobsSeen, jobBadg
         name: f.name, photo: f.photo, headline: f.headline, bio: f.bio, location: f.location, operatingArea: f.operatingArea,
         yearsExperience: f.yearsExperience, availability: f.availability, phone: f.phone,
         showContact: f.showContact, shareReviews: f.shareReviews, languages: f.languages,
-        certifications: f.certifications, experience: f.experience,
+        certifications: f.certifications, experience: f.experience, contractor: !!f.contractor,
       } });
       take(r);
       setMsg('Profile saved.');
-      if (f.name !== user.name) onChanged();
+      if (f.name !== user.name || !!f.contractor !== !!user.contractor) onChanged();
     } catch (err) { setError(err.message); }
     finally { setBusy(false); }
   }
@@ -170,6 +170,14 @@ export default function Profile({ user, onChanged, startSub, onJobsSeen, jobBadg
             <label className="check">
               <input type="checkbox" checked={!!f.shareReviews} onChange={set('shareReviews')} />
               Let anyone who scans my business card QR code read my reviews (reviewers' names stay hidden)
+            </label>
+          </fieldset>
+
+          <fieldset className="recur">
+            <legend>How I work</legend>
+            <label className="check also-contractor">
+              <input type="checkbox" checked={!!f.contractor} onChange={set('contractor')} />
+              <span>I work as an independent contractor <small>Adds Work orders: open work orders on any boat, sign each item, send them for review and invoice the Captain or Owner. You can be crew on a boat and a contractor on others.</small></span>
             </label>
           </fieldset>
 

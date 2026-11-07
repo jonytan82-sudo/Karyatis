@@ -30,7 +30,7 @@ export default function Login({ onLogin }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
-  const [req, setReq] = useState({ name: '', kind: startKind, position: '', vesselName: params.get('vessel') || '', message: '' });
+  const [req, setReq] = useState({ name: '', kind: startKind, position: '', vesselName: params.get('vessel') || '', message: '', alsoContractor: false });
   const [setupName, setSetupName] = useState('');
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
@@ -135,6 +135,13 @@ export default function Login({ onLogin }) {
                     <option value="Contractor">Contractor or external technician</option>
                   </select>
                 </label>
+                {(req.kind === 'Crew' || req.kind === 'Captain') && (
+                  <label className="check also-contractor">
+                    <input type="checkbox" checked={req.alsoContractor} onChange={(e) => setReq({ ...req, alsoContractor: e.target.checked })} />
+                    <span>I also work as an independent contractor <small>Work orders and invoices for jobs on other boats</small></span>
+                  </label>
+                )}
+                {req.kind === 'Contractor' && <p className="hint">Contractors get work orders and invoices for any boat, and a work record that stays with them.</p>}
                 {req.kind === 'Crew' && (
                   <label>Position
                     {catalog

@@ -24,11 +24,14 @@ import StarterProgram from './components/StarterProgram.jsx';
 import RulesReview from './components/RulesReview.jsx';
 import VesselDetails from './components/VesselDetails.jsx';
 import { SuppliesPage } from './components/Supplies.jsx';
+import WorkOrders from './components/WorkOrders.jsx';
+import { InvoicePage } from './components/Invoice.jsx';
 
 const REVIEW_TOKEN = new URLSearchParams(window.location.search).get('w') || '';
+const INVOICE_TOKEN = new URLSearchParams(window.location.search).get('inv') || '';
 
 const VESSEL_TABS = ['board', 'calendar', 'tasks', 'crew', 'rotation', 'reviews', 'supplies'];
-const ICONS = { supplies: 'cart', rules: 'shield', board: 'gauge', calendar: 'calendar', tasks: 'check', crew: 'crew', rotation: 'rotation', reviews: 'star', vessels: 'yacht', profile: 'user', directory: 'search', admin: 'shield' };
+const ICONS = { workorders: 'wrench', supplies: 'cart', rules: 'shield', board: 'gauge', calendar: 'calendar', tasks: 'check', crew: 'crew', rotation: 'rotation', reviews: 'star', vessels: 'yacht', profile: 'user', directory: 'search', admin: 'shield' };
 const PHONE = '(max-width: 700px)';
 
 function usePhone() {
@@ -87,7 +90,7 @@ export default function App() {
     setError('');
     if (!keepTab) {
       const hasVessels = (r.memberships || []).length > 0 || (r.vessels || []).length > 0;
-      setTab(r.vessel ? 'board' : hasVessels ? 'vessels' : r.user && r.user.consultant ? 'rules' : 'profile');
+      setTab(r.vessel ? 'board' : hasVessels ? 'vessels' : r.user && r.user.consultant ? 'rules' : r.user && r.user.contractor ? 'workorders' : 'profile');
       setHome(true);
     }
   }, []);
@@ -138,6 +141,7 @@ export default function App() {
   }
 
   if (REVIEW_TOKEN) return <ExternalReview token={REVIEW_TOKEN} />;
+  if (INVOICE_TOKEN) return <InvoicePage token={INVOICE_TOKEN} />;
   if (checking) return <div className="splash"><Logo size="lg" /><small>Loading…</small></div>;
   if (!s) {
     // Public landing page for visitors; the login form lives at /login (and opens for setup or sign-up links).
@@ -156,6 +160,7 @@ export default function App() {
   if (vessel && !perms.contractor) tabs.push(['rotation', 'Rotation']);
   if (vessel && s.canReviewWork) tabs.push(['reviews', 'Reviews']);
   if (vesselOptions.length > 1 || (!vessel && vesselOptions.length) || s.canRequestVessel) tabs.push(['vessels', 'Vessels']);
+  if (user.contractor) tabs.push(['workorders', 'Work orders']);
   if (vessel || vesselOptions.length) tabs.push(['supplies', 'Marine supplies']);
   if (user.consultant) tabs.push(['rules', 'Rules review']);
   tabs.push(['profile', 'My profile']);
@@ -205,6 +210,7 @@ export default function App() {
       {tab === 'tasks' && vessel && <TaskList tasks={s.tasks || []} onOpen={setOpenId} onStarter={perms.createRoutine ? () => setStarter(true) : null}
         onDetails={s.canEditBoat ? () => setDetails(true) : null} />}
       {tab === 'rules' && user.consultant && <RulesReview user={user} />}
+      {tab === 'workorders' && user.contractor && <WorkOrders />}
       {tab === 'supplies' && <SuppliesPage key={vessel ? vessel.id : 'none'} supplies={s.supplies} vessel={vessel} isBuyer={!!s.isBuyer} pending={s.partsPending || 0} onOpenTask={setOpenId} onChanged={refresh} />}
       {tab === 'rotation' && vessel && !perms.contractor && <Rotation user={user} onOpenTask={setOpenId} />}
       {tab === 'reviews' && vessel && s.canReviewWork && <WorkReviews vessel={vessel} onChanged={refresh} />}

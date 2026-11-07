@@ -68,6 +68,20 @@ React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
 5. Web addresses typed or pasted in notes, descriptions, resolutions and the activity log are clickable.
 6. CJM admin tab should show `Google Script version: 2.5 (photos and files on notes)`.
 
+## Upgrade to 4.1 (contractor work orders and invoices)
+
+1. Apps Script: paste the new `Code.gs`, save, then Deploy → Manage deployments → pencil → New version → Deploy.
+2. GitHub: upload the new site files. Netlify rebuilds by itself.
+3. Nothing to run by hand. The `Businesses`, `WorkOrders` and `Invoices` tabs are created the first time they are used, and `contractor` (Users), `alsoContractor` (Requests) and `woId` (WorkSubmissions) columns are added to the existing tabs.
+
+What it does:
+- Sign-up: crew and captains can tick "I also work as an independent contractor". Contractors get it automatically. Anyone can switch it on or off in My profile → How I work.
+- Work orders tab (contractors only): open a work order on any boat (one of your boats, or another boat with its Captain or Owner's email). Add items with what was found, work done, labor hours by date, and parts with part and serial numbers off and on (N/A on each). Sign each item. A signed item is locked until you take the signature back.
+- Send for review: when every item is signed. Boats on CJM Marine get it in the Reviews tab; other boats review it from an email link, same as jobs on other boats. Declined or withdrawn work orders can be reopened and sent again.
+- Captain: approve it as a new log entry, or pick one of the boat's open tasks to sign off with it (recurring tasks move to the next due date).
+- Invoice: built from the work order at the contractor's rate (My business), with editable hours, rates, parts, charges (travel, mileage, lodging, per diem, shipping), consumables, tax and payment details. Preview and print, email a link (no account needed to open it), mark paid. CJM Marine never takes or holds money.
+- Demo: Coastline Stabilizer Service has three work orders and two invoices; Marco Bellini is crew and contractor.
+
 ## Upgrade to 4.0 (task status, returns and cores)
 Paste Code.gs → save → Manage deployments → pencil → New version → Deploy, then upload this folder to GitHub.
 Tasks, Vessels and SupplyOrders get extra columns on their own. The core reminders run inside the existing daily reminder.

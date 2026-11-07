@@ -62,7 +62,7 @@ export default function Requests({ vesselId, vessels, catalog, allowOversight, a
               <b>{r.name}</b> <small>{r.email}</small>
               <small>
                 Wants a {r.kind.toLowerCase()} account{r.position ? ` as ${r.position}` : ''}
-                {r.vesselName ? ` on ${r.vesselName}` : ''}, {fmtStamp(r.createdAt)}
+                {r.vesselName ? ` on ${r.vesselName}` : ''}{r.alsoContractor ? ', and also works as an independent contractor' : ''}, {fmtStamp(r.createdAt)}
               </small>
               {r.message && <p className="req-msg">{r.message}</p>}
             </div>

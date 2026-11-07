@@ -14,7 +14,7 @@
  *                body: JSON.stringify({ action, token, vesselId, ... }) })
  */
 
-const SCRIPT_VERSION = '4.0 (task status, returns and cores)';
+const SCRIPT_VERSION = '4.1 (contractor work orders and invoices)';
 
 // ───────────────────────── CONFIG ─────────────────────────
 const CONFIG = {
@@ -42,7 +42,7 @@ const CONFIG = {
 };
 
 const SHEETS = {
-  Users:       ['id', 'name', 'email', 'passwordHash', 'salt', 'active', 'isAdmin', 'createdAt', 'consultant'],
+  Users:       ['id', 'name', 'email', 'passwordHash', 'salt', 'active', 'isAdmin', 'createdAt', 'consultant', 'contractor'],
   Profiles:    ['userId', 'photo', 'headline', 'bio', 'location', 'yearsExperience', 'availability',
                 'phone', 'showContact', 'languages', 'certifications', 'experience', 'updatedAt',
                 'shareReviews', 'shareId', 'operatingArea'],
@@ -59,7 +59,7 @@ const SHEETS = {
   Sessions:    ['token', 'userId', 'expiresAt'],
   Tokens:      ['token', 'userId', 'purpose', 'expiresAt', 'used'],
   Requests:    ['id', 'name', 'email', 'kind', 'position', 'vesselName', 'message', 'status',
-                'createdAt', 'handledBy', 'handledAt'],
+                'createdAt', 'handledBy', 'handledAt', 'alsoContractor'],
   Reviews:     ['id', 'userId', 'reviewerId', 'vesselId', 'rating', 'text', 'createdAt', 'updatedAt'],
   Tasks:       ['id', 'title', 'description', 'system', 'type', 'dueDate', 'dueTime',
                 'recurring', 'intervalValue', 'intervalUnit', 'assignedTo', 'state',
@@ -75,7 +75,7 @@ const SHEETS = {
   WorkSubmissions: ['id', 'kind', 'vesselId', 'boatName', 'userId', 'title', 'system', 'description', 'performedDate',
                     'dueDate', 'recurring', 'intervalValue', 'intervalUnit', 'wantScore', 'contactEmail', 'contactName',
                     'token', 'tokenExpires', 'status', 'decidedBy', 'decidedLabel', 'decidedAt', 'decisionNote',
-                    'score', 'reviewText', 'taskId', 'completionId', 'createdAt', 'senderSeen'],
+                    'score', 'reviewText', 'taskId', 'completionId', 'createdAt', 'senderSeen', 'woId'],
   // Rule records reviewed by a marine compliance consultant (see RULES below)
   Rules:       ['id', 'title', 'system', 'basis', 'authority', 'jurisdiction', 'source', 'sourceRef', 'edition',
                 'appliesFlags', 'appliesUsage', 'minLength', 'maxLength', 'minGT', 'maxGT', 'minPassengers', 'maxPassengers', 'classed', 'area',
@@ -94,6 +94,13 @@ const SHEETS = {
                  // returns and cores
                  'retKind', 'retStatus', 'retDue', 'retCharge', 'retRma', 'retPnOff', 'retSnOff', 'retPnOn', 'retSnOn', 'retCarrier', 'retTracking',
                  'retCredit', 'retNote', 'retOpenedBy', 'retOpenedAt', 'retClosedBy', 'retClosedAt', 'retReminded'],
+  // Contractor business details, work orders and invoices (see CONTRACTOR WORK ORDERS below)
+  Businesses:  ['userId', 'name', 'phone', 'email', 'address', 'credential', 'currency', 'rate', 'taxRate', 'consumablesPct',
+                'mileRate', 'travelRate', 'payTo', 'payAddress', 'payHow', 'payTerms', 'updatedAt'],
+  WorkOrders:  ['id', 'number', 'userId', 'vesselId', 'boatName', 'contactName', 'contactEmail', 'title', 'description',
+                'items', 'notes', 'status', 'submissionId', 'openedAt', 'editedAt', 'signedAt'],
+  Invoices:    ['id', 'number', 'woId', 'userId', 'vesselId', 'boatName', 'data', 'total', 'currency', 'status',
+                'token', 'createdAt', 'editedAt', 'sentAt', 'sentTo', 'paidAt', 'paidNote'],
   Audit:       ['timestamp', 'userId', 'action', 'taskId', 'details', 'vesselId']
 };
 
@@ -355,6 +362,7 @@ function doPost(e) {
       getWorkReview:  () => getWorkReview(req.reviewToken),
       answerWorkReview: () => withLock(() => answerWorkReview(req.reviewToken, req.answer || {})),
       workReviewFile: () => workReviewFile(req.reviewToken, req.id),
+      getInvoice:     () => getInvoice(req.invoiceToken),
       catalog:        () => ({ ok: true, catalog: roleCatalog() })
     };
     if (pub[req.action]) return json(pub[req.action]());
@@ -419,6 +427,18 @@ function doPost(e) {
       cancelWork:     () => withLock(() => cancelWork(user, req.id)),
       decideWork:     () => withLock(() => decideWork(V(), user, req.id, req.decision || {})),
       getWorkFile:    () => getWorkFile(user, req.id),
+
+      // contractor work orders and invoices (no money is handled)
+      workOrders:      () => workOrdersView(user),
+      saveBusiness:    () => withLock(() => saveBusiness(user, req.business || {})),
+      createWorkOrder: () => withLock(() => createWorkOrder(user, req.workOrder || {})),
+      saveWorkOrder:   () => withLock(() => saveWorkOrder(user, req.id, req.workOrder || {})),
+      submitWorkOrder: () => withLock(() => submitWorkOrder(user, req.id, req.options || {})),
+      reopenWorkOrder: () => withLock(() => reopenWorkOrder(user, req.id)),
+      createInvoice:   () => withLock(() => createInvoice(user, req.woId)),
+      saveInvoice:     () => withLock(() => saveInvoice(user, req.id, req.invoice || {})),
+      sendInvoice:     () => withLock(() => sendInvoice(user, req.id)),
+      setInvoicePaid:  () => withLock(() => setInvoicePaid(user, req.id, !!req.paid, req.note)),
 
       // vessel crew
       listCrew:       () => ({ ok: true, crew: listCrew(V()) }),
@@ -759,7 +779,7 @@ function bootstrap(user, vesselId) {
 
 function publicUser(u) {
   return { id: u.id, name: u.name, email: u.email, isAdmin: isTrue(u.isAdmin), canSearch: canSearch(u),
-           consultant: isTrue(u.consultant) || isTrue(u.isAdmin) };
+           consultant: isTrue(u.consultant) || isTrue(u.isAdmin), contractor: isContractor(u) };
 }
 
 // ───────────────────────── VESSEL CONTEXT ─────────────────────────
@@ -1002,10 +1022,11 @@ function requestAccount(r) {
     position: TITLES[r.position] ? r.position : '',
     vesselName: String(r.vesselName || '').trim().slice(0, 100),
     message: String(r.message || '').trim().slice(0, 1000),
-    status: 'pending', createdAt: nowIso(), handledBy: '', handledAt: ''
+    status: 'pending', createdAt: nowIso(), handledBy: '', handledAt: '',
+    alsoContractor: kind === 'Contractor' || (kind !== 'Owner' && r.alsoContractor) ? 'TRUE' : 'FALSE'
   });
   notifyNewRequest({ name, email, kind, position: TITLES[r.position] ? r.position : '', vesselName: String(r.vesselName || '').trim(),
-                     message: String(r.message || '').trim() });
+                     message: String(r.message || '').trim(), alsoContractor: kind !== 'Contractor' && kind !== 'Owner' && !!r.alsoContractor });
   return { ok: true, message: 'Request sent. You will get an email when your account is ready.' };
 }
 
@@ -1032,7 +1053,7 @@ function countPendingRequests(user) {
 function listRequests(user, vesselId) {
   return { ok: true, requests: requestsVisibleTo(user, vesselId || '').map(r => ({
     id: r.id, name: r.name, email: r.email, kind: r.kind, position: r.position, vesselName: r.vesselName,
-    message: r.message, createdAt: r.createdAt })) };
+    message: r.message, createdAt: r.createdAt, alsoContractor: r.kind !== 'Contractor' && isTrue(r.alsoContractor) })) };
 }
 
 function approveRequest(user, id, vesselId, position, roleInput) {
@@ -1059,6 +1080,10 @@ function approveRequest(user, id, vesselId, position, roleInput) {
   }
   r.status = 'approved'; r.handledBy = user.id; r.handledAt = nowIso();
   update('Requests', r._row, r);
+  if (isTrue(r.alsoContractor) || r.kind === 'Contractor') {
+    const nu = readTable('Users').find(u => u.email === r.email);
+    if (nu && !isTrue(nu.contractor)) { nu.contractor = 'TRUE'; update('Users', nu._row, nu); }
+  }
   audit(user.id, 'approveRequest', '', r.name + ' <' + r.email + '>', vessel ? vessel.id : '');
   return res;
 }
@@ -1153,7 +1178,8 @@ function getProfile(viewer, userId) {
       certifications: parseList(p.certifications), experience: parseList(p.experience),
       vesselHistory: vesselHistory(userId), updatedAt: p.updatedAt || '',
       shareReviews: isTrue(p.shareReviews),
-      shareId: isTrue(p.shareReviews) ? (p.shareId || '') : ''
+      shareId: isTrue(p.shareReviews) ? (p.shareId || '') : '',
+      contractor: isContractor(target)
     },
     reviews,
     summary: ratingSummary(userId),
@@ -1167,6 +1193,11 @@ function getProfile(viewer, userId) {
 function clip(s, n) { return String(s == null ? '' : s).trim().slice(0, n); }
 
 function saveProfile(user, p) {
+  if (p.contractor !== undefined) {
+    user.contractor = p.contractor ? 'TRUE' : 'FALSE';
+    update('Users', user._row, user);
+    audit(user.id, 'setContractor', '', p.contractor ? 'Works as an independent contractor' : 'Contractor work turned off', '');
+  }
   if (p.name !== undefined) {
     const name = clip(p.name, 100);
     if (!name) throw new Error('Name cannot be empty');
@@ -2221,7 +2252,7 @@ const TABLE_CACHE = {}; // lives for one request only
 
 const HEADERS_CHECKED = {};
 
-const AUTO_TABS = ['TaskReviews', 'Attachments', 'StoredFiles', 'VesselRequests', 'Rotations', 'RotationChanges', 'RotationRules', 'Handovers', 'WorkSubmissions', 'Rules', 'RuleHistory', 'SupplyMaps', 'TaskSupplies', 'SupplyOrders'];
+const AUTO_TABS = ['TaskReviews', 'Attachments', 'StoredFiles', 'VesselRequests', 'Rotations', 'RotationChanges', 'RotationRules', 'Handovers', 'WorkSubmissions', 'Rules', 'RuleHistory', 'SupplyMaps', 'TaskSupplies', 'SupplyOrders', 'Businesses', 'WorkOrders', 'Invoices'];
 
 function sheet(name) {
   let sh = SpreadsheetApp.getActive().getSheetByName(name);
@@ -2961,6 +2992,7 @@ function notifyNewRequest(r) {
     '<tr><td style="padding:2px 12px 2px 0;color:#666">Email</td><td>' + esc(r.email) + '</td></tr>' +
     (r.position ? '<tr><td style="padding:2px 12px 2px 0;color:#666">Position</td><td>' + esc(r.position) + '</td></tr>' : '') +
     (r.vesselName ? '<tr><td style="padding:2px 12px 2px 0;color:#666">Vessel</td><td>' + esc(r.vesselName) + '</td></tr>' : '') +
+    (r.alsoContractor ? '<tr><td style="padding:2px 12px 2px 0;color:#666">Also</td><td>Works as an independent contractor</td></tr>' : '') +
     '</table>' + (r.message ? '<p>“' + esc(r.message) + '”</p>' : '') +
     (link ? '<p><a href="' + link + '" style="display:inline-block;background:#12324a;color:#fff;padding:9px 16px;border-radius:6px;text-decoration:none">Review the request</a></p>' : '') +
     '<p style="color:#666">CJM admins: CJM admin tab → Account requests. Captains and owners: Crew tab → Account requests.</p>');
@@ -3301,6 +3333,7 @@ function addDemoRotations_() {
     insert('RotationRules', { vesselId: v.id, group: 'Engineering', min: '1' });
     insert('RotationRules', { vesselId: v.id, group: 'Deck', min: '1' });
     addDemoWorkRequests_(v, deck, stew);
+    addDemoWorkOrders_(v);
     insert('RotationChanges', { id: newId('RC'), vesselId: v.id, userId: stew, type: 'leave', fromDate: D(9), toDate: D(12),
       note: 'Sister’s wedding in Antibes', status: 'pending', requestedAt: now, handledBy: '', handledAt: '' });
     return ['Rotation examples added to ' + DEMO_VESSEL + '. Log in as jake.turner@meridianstar.test to see the handover prompt.'];
@@ -3314,7 +3347,7 @@ function addDemoRotations_() {
 //  - external: crew or contractors log a job on any boat and name its Captain or Owner by email.
 //              If that person runs the boat on CJM Marine, it waits in their Reviews tab like "done".
 //              If not, they get an email link to confirm and score it without an account, plus an optional invitation to join.
-const WORK_KINDS = { suggest: 'Suggested task', done: 'Work done', external: 'Job on another boat' };
+const WORK_KINDS = { suggest: 'Suggested task', done: 'Work done', external: 'Job on another boat', workorder: 'Contractor work order' };
 const WORK_PENDING_MAX = 30;      // waiting requests per person
 const WORK_EXTERNAL_PER_DAY = 10; // emails to Captains outside CJM Marine, per person per day
 const WORK_LINK_DAYS = 60;        // how long the emailed review link works
@@ -3485,12 +3518,18 @@ function approvalsFor(c, user) {
              dueDate: x.dueDate, recurring: isTrue(x.recurring), intervalValue: x.intervalValue, intervalUnit: x.intervalUnit,
              wantScore: isTrue(x.wantScore), boatName: x.boatName, createdAt: x.createdAt, status: x.status,
              decidedBy: names[x.decidedBy] || '', decidedAt: x.decidedAt, decisionNote: x.decisionNote,
-             score: x.score ? Number(x.score) : null, taskId: x.taskId, attachments: workFiles(x.id) };
+             score: x.score ? Number(x.score) : null, taskId: x.taskId, attachments: workFiles(x.id),
+             woId: x.woId || '', invoice: x.woId ? invoiceSummary(x.woId) : null };
   };
   const all = readTable('WorkSubmissions').filter(x => x.vesselId === c.vessel.id && x.userId !== user.id && x.status !== 'cancelled');
   return {
     pending: all.filter(x => x.status === 'pending').sort((a, b) => a.createdAt < b.createdAt ? -1 : 1).map(view),
-    done: all.filter(x => x.status !== 'pending').sort((a, b) => a.decidedAt < b.decidedAt ? 1 : -1).slice(0, 20).map(view)
+    done: all.filter(x => x.status !== 'pending').sort((a, b) => a.decidedAt < b.decidedAt ? 1 : -1).slice(0, 20).map(view),
+    // open tasks a job can be attached to instead of becoming a new log entry
+    openTasks: vesselTasks(c).filter(t => t.state === 'Open')
+      .map(t => ({ id: t.id, title: t.title, system: t.system, type: t.type, dueDate: t.dueDate }))
+      .sort((a, b) => (a.dueDate || '9999') < (b.dueDate || '9999') ? -1 : 1),
+    invoices: vesselInvoices(c.vessel.id)
   };
 }
 
@@ -3537,8 +3576,33 @@ function decideWork(c, user, id, d) {
       score = Math.round(Number(d.score));
       if (!(score >= 1 && score <= 10)) throw new Error('Choose a score from 1 to 10');
     }
-    const repeat = !!d.recurring;
+    const repeat = !!d.recurring && !d.taskId;
     if (repeat) validateInterval(d.intervalValue, d.intervalUnit);
+    if (d.taskId) {
+      // Attach the job to a task already on the boat: it is signed off as done by the person who sent it.
+      task = taskIn(c, d.taskId);
+      if (task.state !== 'Open') throw new Error('That task is already ' + String(task.state).toLowerCase() + '. Choose another or add it as a new entry.');
+      const timing = task.dueDate ? (daysBetween(task.dueDate, x.performedDate) > 0 ? 'Late by ' + daysBetween(task.dueDate, x.performedDate) + 'd' : 'On time') : 'No due date';
+      completionId = newId('X');
+      insert('Completions', { id: completionId, taskId: task.id, dueDate: task.dueDate, performedDate: x.performedDate, performedBy: x.userId,
+                              timing, notes: x.description, loggedAt: now });
+      task.lastPerformed = x.performedDate; task.lastPerformedBy = x.userId; task.reminderLog = ''; task.workStatus = '';
+      let detail;
+      if (task.type === 'Issue') {
+        task.state = 'Resolved'; task.resolution = clip(x.description || title, 2000);
+        detail = 'Resolved ' + x.performedDate;
+      } else if (isTrue(task.recurring)) {
+        const base = CONFIG.RECUR_FROM === 'due' && task.dueDate ? task.dueDate : x.performedDate;
+        task.dueDate = addInterval(base, task.intervalValue, task.intervalUnit);
+        detail = 'Performed ' + x.performedDate + ' (' + timing + '). Next due ' + task.dueDate;
+      } else {
+        task.state = 'Completed';
+        detail = 'Performed ' + x.performedDate + ' (' + timing + ')';
+      }
+      update('Tasks', task._row, task);
+      audit(user.id, 'complete', task.id, detail + ' by ' + userName(x.userId) + ' (' + WORK_KINDS[x.kind].toLowerCase() + ': ' + x.title +
+            ', approved by ' + user.name + ')', c.vessel.id);
+    } else {
     task = { id: newId('T'), title, description: x.description, system, type: 'Routine',
              dueDate: repeat ? addInterval(x.performedDate, d.intervalValue, d.intervalUnit) : '', dueTime: '',
              recurring: repeat ? 'TRUE' : 'FALSE', intervalValue: repeat ? String(d.intervalValue) : '', intervalUnit: repeat ? String(d.intervalUnit) : '',
@@ -3550,6 +3614,7 @@ function decideWork(c, user, id, d) {
                             timing: 'Not scheduled', notes: x.description, loggedAt: now });
     audit(user.id, 'complete', task.id, 'Performed ' + x.performedDate + ' by ' + userName(x.userId) + ' (logged by them, approved by ' + user.name + ')' +
           (repeat ? '. Next due ' + task.dueDate : ''), c.vessel.id);
+    }
     if (score) {
       insert('TaskReviews', { id: newId('W'), vesselId: c.vessel.id, taskId: task.id, completionId, userId: x.userId, requestedAt: x.createdAt,
         message: '', status: 'reviewed', reviewerId: user.id, score: String(score), text: clip(d.text, 1000), reviewedAt: now,
@@ -3564,13 +3629,15 @@ function decideWork(c, user, id, d) {
     insert('Notes', note);
     atts.forEach(a => { a.taskId = task.id; a.noteId = note.id; a.vesselId = c.vessel.id; update('Attachments', a._row, a); });
   }
-  x.status = 'approved'; x.taskId = task.id; x.completionId = completionId; x.title = title;
+  x.status = 'approved'; x.taskId = task.id; x.completionId = completionId; if (!d.taskId) x.title = title;
   x.score = score ? String(score) : ''; x.reviewText = score ? clip(d.text, 1000) : '';
   update('WorkSubmissions', x._row, x);
+  syncWorkOrder(x);
   if (crew && isTrue(crew.active)) {
     sendMail(crew.email, 'Approved: ' + title + (score ? ' (' + score + '/10)' : ''),
       '<p>' + esc(user.name) + ' approved <b>' + esc(title) + '</b> on ' + esc(c.vessel.name) + '. ' +
       (x.kind === 'suggest' ? 'It is now in the task list' + (task.assignedTo ? ' and assigned to you' : '') + ', due ' + task.dueDate + '.'
+                            : d.taskId ? 'It was signed off on the boat\'s task <b>' + esc(task.title) + '</b> in the maintenance log.'
                             : 'It is now in the vessel\'s maintenance log.') + '</p>' +
       (score ? '<p style="font-size:22px;font-weight:bold">' + score + ' / 10</p>' + (x.reviewText ? '<p><i>' + esc(x.reviewText) + '</i></p>' : '') +
                '<p>The score is now part of your CJM Marine record.</p>' : '') +
@@ -3623,6 +3690,7 @@ function answerWorkReview(token, a) {
   x.status = a.approve ? 'approved' : 'declined'; x.decidedLabel = role + ' ' + name; x.decidedAt = now; x.senderSeen = '';
   x.score = score ? String(score) : ''; x.reviewText = a.approve ? text : ''; x.decisionNote = a.approve ? '' : text;
   update('WorkSubmissions', x._row, x);
+  syncWorkOrder(x);
   if (score) {
     insert('TaskReviews', { id: newId('W'), vesselId: '', taskId: '', completionId: '', userId: x.userId, requestedAt: x.createdAt,
       message: '', status: 'reviewed', reviewerId: '', score: String(score), text, reviewedAt: now, taskTitle: x.title,
@@ -3660,6 +3728,93 @@ function addDemoWorkRequests_(v, deck, stew) {
     performedDate: addInterval(today(), -1, 'days'), dueDate: '', recurring: 'FALSE', intervalValue: '', intervalUnit: '', wantScore: 'TRUE' }));
 }
 
+/** Demo: the stabilizer contractor's work orders and invoices, and the Chief Engineer set up as crew and contractor. */
+function addDemoWorkOrders_(v) {
+  const u = (email) => readTable('Users').find(x => x.email === email);
+  const con = u('service@coastline-stab.test'), chief = u('marco.bellini@meridianstar.test');
+  if (!con) return;
+  [con, chief].filter(Boolean).forEach(x => { x.contractor = 'TRUE'; update('Users', x._row, x); });
+  deleteRowsWhere('Businesses', r => r.userId === con.id);
+  deleteRowsWhere('WorkOrders', r => r.userId === con.id);
+  deleteRowsWhere('Invoices', r => r.userId === con.id);
+  deleteRowsWhere('WorkSubmissions', r => r.userId === con.id && !!r.woId);
+  const D = (n) => addInterval(today(), n, 'days'), at = (n, hh) => D(n) + 'T' + (hh || '15') + ':00:00Z';
+  insert('Businesses', { userId: con.id, name: 'Coastline Stabilizer Service LLC', phone: '+1 (555) 010-0107', email: 'service@coastline-stab.test',
+    address: 'Unit 4, 1200 Marina Way\nFort Lauderdale, FL 33316', credential: 'Stabilizer and hydraulics technician', currency: 'USD',
+    rate: '125', taxRate: '7', consumablesPct: '5', mileRate: '0.7', travelRate: '95', payTo: 'Coastline Stabilizer Service LLC',
+    payAddress: 'Unit 4, 1200 Marina Way\nFort Lauderdale, FL 33316', payHow: 'Zelle: (555) 010-0107\nACH details on request', payTerms: 'Net 15',
+    updatedAt: at(-30) });
+  const sign = (n) => ({ name: con.name, credential: 'Stabilizer and hydraulics technician', at: at(n, '17') });
+  const L = (n, h, note) => ({ id: newId('L'), date: D(n), hours: String(h), note: note || '' });
+  const P = (o) => Object.assign({ id: newId('P'), desc: '', pnOff: '', snOff: '', pnOn: '', snOn: '', naOff: false, naOn: false, qty: '1', price: '', status: 'installed' }, o);
+  const wo = (o) => {
+    const row = Object.assign({ id: newId('WO'), userId: con.id, vesselId: '', boatName: '', contactName: '', contactEmail: '', description: '',
+      notes: '[]', status: 'open', submissionId: '', signedAt: '' }, o, { items: JSON.stringify(o.items) });
+    insert('WorkOrders', row);
+    return row;
+  };
+  const sub = (row, o) => {
+    const items = JSON.parse(row.items);
+    const x = Object.assign({ id: newId('J'), kind: 'workorder', vesselId: row.vesselId, boatName: row.boatName, userId: con.id,
+      title: row.number + ': ' + row.title, system: '', description: woSummary(items), performedDate: row.signedAt.slice(0, 10),
+      dueDate: '', recurring: 'FALSE', intervalValue: '', intervalUnit: '', wantScore: 'TRUE', contactEmail: row.contactEmail, contactName: row.contactName,
+      token: '', tokenExpires: '', status: 'pending', decidedBy: '', decidedLabel: '', decidedAt: '', decisionNote: '', score: '', reviewText: '',
+      taskId: '', completionId: '', createdAt: row.signedAt, senderSeen: 'TRUE', woId: row.id }, o);
+    insert('WorkSubmissions', x);
+    return x;
+  };
+  const invoice = (row, number, extra, status, sentN, paidN) => {
+    const d = Object.assign(buildInvoiceData(con, row), extra || {});
+    insert('Invoices', { id: newId('INV'), number, woId: row.id, userId: con.id, vesselId: row.vesselId, boatName: row.boatName, data: JSON.stringify(d),
+      total: String(invTotals(d).total), currency: 'USD', status, token: Utilities.getUuid().replace(/-/g, ''), createdAt: at(sentN, '18'), editedAt: at(sentN, '18'),
+      sentAt: at(sentN, '18'), sentTo: d.billToEmail, paidAt: paidN !== undefined ? at(paidN, '12') : '', paidNote: paidN !== undefined ? 'Zelle received' : '' });
+  };
+
+  // 1. Signed off on the demo yacht and waiting for the Captain, invoice sent
+  const w1 = wo({ number: 'WO-0003', vesselId: v.id, boatName: v.name, title: 'Annual stabilizer service', openedAt: at(-3, '12'), editedAt: at(-1, '17'),
+    status: 'review', signedAt: at(-1, '17'), description: 'Annual service on both fins. Chief Engineer attended.',
+    items: [
+      { id: newId('I'), no: 1, system: 'Steering & stabilizers', title: 'Port fin actuator rod seal', status: 'done',
+        discrepancy: 'Hydraulic oil weeping at the port actuator rod seal.', corrective: 'Replaced the rod seal kit, torqued to the OEM manual, cycled 20 times. No leaks.',
+        labor: [L(-2, 3.5)], parts: [P({ desc: 'Actuator rod seal kit', pnOff: 'SK-4410', pnOn: 'SK-4410', naOff: false, price: '286.40' })], sign: sign(-2) },
+      { id: newId('I'), no: 2, system: 'Steering & stabilizers', title: 'Hydraulic oil and return filters', status: 'done',
+        discrepancy: '', corrective: 'Changed both return filters, took an oil sample, topped up 6 L of ISO 32.',
+        labor: [L(-1, 1.5)], parts: [P({ desc: 'Return filter element', pnOff: 'HF-210', pnOn: 'HF-210', qty: '2', price: '64.90' }),
+                                    P({ desc: 'Hydraulic oil ISO 32 (litre)', naOff: true, naOn: true, qty: '6', price: '9.80' })], sign: sign(-1) },
+      { id: newId('I'), no: 3, system: 'Steering & stabilizers', title: 'Control system self-test and gyro calibration', status: 'done',
+        discrepancy: '', corrective: 'Ran the self-test and calibrated the gyro. All readings within limits.', labor: [L(-1, 1)], parts: [], sign: sign(-1) }
+    ] });
+  const s1 = sub(w1, {});
+  w1.submissionId = s1.id; update('WorkOrders', readTable('WorkOrders').find(x => x.id === w1.id)._row, w1);
+  invoice(w1, 'INV-0003', { charges: [{ id: newId('C'), kind: 'mileage', desc: 'Shop to Bahia Mar and back', qty: '38', rate: '0.7' }] }, 'sent', -1);
+
+  // 2. In progress on a boat that is not on CJM Marine, waiting on a part
+  wo({ number: 'WO-0004', boatName: 'S/Y Windward Lady', contactName: 'Ana Reyes', contactEmail: 'ana.reyes@windward.test',
+    title: 'Starboard fin not centering', openedAt: at(-2, '13'), editedAt: at(0, '10'),
+    notes: JSON.stringify([{ id: newId('N'), text: 'Proportional valve ordered, due Thursday. Fin locked at center for the passage.', at: at(0, '10') }]),
+    items: [
+      { id: newId('I'), no: 1, system: 'Steering & stabilizers', title: 'Starboard fin holds 4 degrees off center', status: 'parts',
+        discrepancy: 'Fin drifts to 4 degrees with the system on. Valve response slow on the test.', corrective: '',
+        labor: [L(-2, 2, 'Diagnosis')], parts: [P({ desc: 'Proportional valve', pnOff: 'PV-88-24', snOff: 'A1934', pnOn: 'PV-88-24B', status: 'ordered', price: '1840' })], sign: null },
+      { id: newId('I'), no: 2, system: 'Steering & stabilizers', title: 'Check fin seals while the boat is in', status: 'open',
+        discrepancy: '', corrective: '', labor: [], parts: [], sign: null }
+    ] });
+
+  // 3. Approved by email last month and paid
+  const w3 = wo({ number: 'WO-0002', boatName: 'M/Y Blue Horizon', contactName: 'Tom Price', contactEmail: 'tom.price@bluehorizon.test',
+    title: 'Stabilizer hydraulic pump replacement', openedAt: at(-40, '12'), editedAt: at(-37, '17'), status: 'approved', signedAt: at(-37, '17'),
+    items: [
+      { id: newId('I'), no: 1, system: 'Steering & stabilizers', title: 'Hydraulic pump noisy and losing pressure', status: 'done',
+        discrepancy: 'Pump whining under load, pressure 15% low.', corrective: 'Replaced the pump and coupling, bled the system, pressure test good.',
+        labor: [L(-38, 4), L(-37, 2)], parts: [P({ desc: 'Hydraulic pump', pnOff: 'HP-300', snOff: 'K22871', pnOn: 'HP-300A', snOn: 'K30915', price: '2450' })], sign: sign(-37) }
+    ] });
+  const s3 = sub(w3, { status: 'approved', decidedLabel: 'Captain Tom Price', decidedAt: at(-35, '09'), score: '9', reviewText: 'Quick diagnosis and a clean install.' });
+  w3.submissionId = s3.id; update('WorkOrders', readTable('WorkOrders').find(x => x.id === w3.id)._row, w3);
+  insert('TaskReviews', { id: newId('W'), vesselId: '', taskId: '', completionId: '', userId: con.id, requestedAt: s3.createdAt, message: '', status: 'reviewed',
+    reviewerId: '', score: '9', text: s3.reviewText, reviewedAt: s3.decidedAt, taskTitle: s3.title, vesselName: 'M/Y Blue Horizon', reviewerLabel: 'Captain',
+    reviewerName: 'Tom Price', workDate: s3.performedDate });
+  invoice(w3, 'INV-0002', {}, 'paid', -37, -30);
+}
 
 // ═════════════════════════ STARTER MAINTENANCE PROGRAM ═════════════════════════
 // The website holds the list of common jobs (src/jobLibrary.js). The Captain or a department lead ticks the ones
@@ -4476,4 +4631,513 @@ function coreReminders() {
     sent++;
   });
   return sent;
+}
+
+// ═════════════════════════ CONTRACTOR WORK ORDERS AND INVOICES ═════════════════════════
+// Anyone who works as an independent contractor (crew who also take outside jobs, or contractors only) keeps their
+// business details, opens work orders on any boat, signs each item off, and sends the finished work order for review
+// the same way as a job on another boat: in the app when the boat is on CJM Marine, by email when it is not.
+// An invoice is built from the work order and sent as a link. CJM Marine never handles the money: the invoice says
+// how to pay the contractor, and the contractor marks it paid.
+const WO_MAX_ITEMS = 60;
+const WO_MAX_JSON = 45000;            // one Google Sheets cell holds 50,000 characters
+const WO_ITEM_STATUS = ['open', 'active', 'parts', 'done'];
+const WO_PART_STATUS = ['needed', 'ordered', 'received', 'installed'];
+const WO_CURRENCIES = ['USD', 'EUR', 'GBP', 'AUD', 'CAD', 'CHF'];
+const WO_CHARGE_KINDS = ['travel', 'mileage', 'vehicle', 'lodging', 'perdiem', 'shipping', 'other'];
+const INVOICE_EMAILS_PER_DAY = 20;
+
+function isContractor(u) {
+  if (!u) return false;
+  const v = String(u.contractor || '').toUpperCase();
+  if (v === 'TRUE') return true;
+  if (v === 'FALSE') return false;
+  // older accounts: anyone who is a contractor on a boat
+  return readTable('Memberships').some(m => m.userId === u.id && m.status === 'active' && permsOfMember(m).contractor);
+}
+
+function requireContractor(user) {
+  if (!isContractor(user)) throw new Error('Turn on contractor work in My profile first');
+}
+
+function woNum(v) { const n = Number(String(v == null ? '' : v).replace(/[^\d.-]/g, '')); return isFinite(n) ? n : 0; }
+function woAmount(v, max) {
+  const n = Math.max(0, Math.min(max || 1e7, woNum(v)));
+  return n ? String(Math.round(n * 100) / 100) : '';
+}
+function woId(v, prefix) { return /^[A-Za-z0-9_-]{3,40}$/.test(String(v || '')) ? String(v) : newId(prefix); }
+function woDate(v) {
+  const d = String(v || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return today();
+  return d > today() ? today() : d;
+}
+
+function nextDocNumber(table, userId, prefix) {
+  const n = readTable(table).filter(r => r.userId === userId)
+    .reduce((m, r) => Math.max(m, parseInt(String(r.number || '').replace(/\D/g, ''), 10) || 0), 0);
+  return prefix + '-' + ('000' + (n + 1)).slice(-4);
+}
+
+function businessOf(userId) { return readTable('Businesses').find(b => b.userId === userId) || null; }
+
+function businessView(user) {
+  const b = businessOf(user.id) || {};
+  const f = ['name', 'phone', 'email', 'address', 'credential', 'rate', 'taxRate', 'consumablesPct', 'mileRate', 'travelRate',
+             'payTo', 'payAddress', 'payHow', 'payTerms'];
+  const out = {};
+  f.forEach(k => out[k] = b[k] || '');
+  out.currency = b.currency || 'USD';
+  out.saved = !!b.userId;
+  return out;
+}
+
+function saveBusiness(user, b) {
+  requireContractor(user);
+  let row = businessOf(user.id);
+  const isNew = !row;
+  row = row || { userId: user.id };
+  ['name', 'phone', 'credential', 'payTo', 'payTerms'].forEach(k => row[k] = clip(b[k], 120));
+  row.email = clip(b.email, 120).toLowerCase();
+  if (row.email && !emailOk(row.email)) throw new Error('The business email does not look right');
+  ['address', 'payAddress', 'payHow'].forEach(k => row[k] = clip(b[k], 400));
+  row.currency = WO_CURRENCIES.indexOf(b.currency) !== -1 ? b.currency : 'USD';
+  row.rate = woAmount(b.rate, 100000); row.travelRate = woAmount(b.travelRate, 100000);
+  row.taxRate = woAmount(b.taxRate, 50); row.consumablesPct = woAmount(b.consumablesPct, 100);
+  row.mileRate = woAmount(b.mileRate, 1000);
+  row.updatedAt = nowIso();
+  if (isNew) insert('Businesses', row); else update('Businesses', row._row, row);
+  audit(user.id, 'saveBusiness', '', row.name || '(no business name)', '');
+  return workOrdersView(user);
+}
+
+// ── work orders ──
+function cleanParts(list) {
+  return (Array.isArray(list) ? list : []).slice(0, 40).map(x => ({
+    id: woId(x.id, 'P'), desc: clip(x.desc, 150),
+    pnOff: clip(x.pnOff, 60), snOff: clip(x.snOff, 60), pnOn: clip(x.pnOn, 60), snOn: clip(x.snOn, 60),
+    naOff: !!x.naOff, naOn: !!x.naOn,
+    qty: woAmount(x.qty, 10000) || '1', price: woAmount(x.price, 1000000),
+    status: WO_PART_STATUS.indexOf(x.status) !== -1 ? x.status : 'needed'
+  })).filter(x => x.desc || x.pnOn || x.pnOff);
+}
+
+function cleanItems(list, prev, user) {
+  list = Array.isArray(list) ? list : [];
+  if (list.length > WO_MAX_ITEMS) throw new Error('A work order can have up to ' + WO_MAX_ITEMS + ' items');
+  const before = {};
+  prev.forEach(i => before[i.id] = i);
+  const seen = {};
+  return list.map((it, idx) => {
+    const old = before[it.id];
+    // A signed item is locked: it says who did the work. Take the signature back first to change it.
+    if (old && old.sign && it.sign) { seen[old.id] = 1; return Object.assign({}, old, { no: idx + 1 }); }
+    const item = {
+      id: woId(it.id, 'I'), no: idx + 1, system: clip(it.system, 60), title: clip(it.title, 200),
+      discrepancy: clip(it.discrepancy, 2000), corrective: clip(it.corrective, 3000),
+      status: WO_ITEM_STATUS.indexOf(it.status) !== -1 ? it.status : 'open',
+      labor: (Array.isArray(it.labor) ? it.labor : []).slice(0, 80)
+        .map(l => ({ id: woId(l.id, 'L'), date: woDate(l.date), hours: woAmount(l.hours, 24), note: clip(l.note, 200) }))
+        .filter(l => woNum(l.hours) > 0),
+      parts: cleanParts(it.parts),
+      sign: null
+    };
+    if (seen[item.id]) item.id = newId('I');
+    seen[item.id] = 1;
+    if (!item.title) throw new Error('Item ' + item.no + ' needs a title');
+    if (it.sign) {
+      if (!item.corrective) throw new Error('Item ' + item.no + ' needs the work done written in before it can be signed');
+      item.sign = { name: user.name, credential: clip(it.sign.credential, 80), at: nowIso() };
+      item.status = 'done';
+    } else if (item.status === 'done') item.status = 'active';
+    return item;
+  });
+}
+
+function itemHours(it) { return (it.labor || []).reduce((s, l) => s + woNum(l.hours), 0); }
+
+function woSummary(items) {
+  return items.map(it => {
+    const parts = (it.parts || []).map(p => {
+      const off = p.naOff ? '' : (p.pnOff || p.pnOn) + (p.snOff ? ' s/n ' + p.snOff : '');
+      const on = p.naOn ? '' : (p.pnOn || p.pnOff) + (p.snOn ? ' s/n ' + p.snOn : '');
+      const name = p.desc ? p.desc + ': ' : '';
+      if (off && on) return name + 'removed ' + off + ', installed ' + on + '.';
+      if (on) return name + 'installed ' + on + '.';
+      if (off) return name + 'removed ' + off + '.';
+      return p.desc ? p.desc + ' (qty ' + p.qty + ').' : '';
+    }).filter(Boolean).join(' ');
+    const h = itemHours(it);
+    return it.no + '. ' + (it.system ? it.system + ': ' : '') + it.title + '.' +
+      (it.discrepancy ? ' Found: ' + it.discrepancy : '') + (it.corrective ? ' Done: ' + it.corrective : '') +
+      (parts ? ' ' + parts : '') + (h ? ' ' + (Math.round(h * 10) / 10) + ' hr.' : '') +
+      (it.sign ? ' Signed ' + it.sign.name + (it.sign.credential ? ', ' + it.sign.credential : '') + '.' : '');
+  }).join('\n');
+}
+
+function woView(w, subs, invs, vessels) {
+  const sub = w.submissionId ? subs[w.submissionId] : null;
+  let review = '';
+  if (sub) review = sub.status === 'pending' && sub.tokenExpires && sub.tokenExpires < today() ? 'expired' : sub.status;
+  const inv = invs[w.id];
+  return {
+    id: w.id, number: w.number, vesselId: w.vesselId, boatName: (w.vesselId && vessels[w.vesselId]) || w.boatName,
+    onPlatform: !!w.vesselId, contactName: w.contactName, contactEmail: w.contactEmail, title: w.title, description: w.description,
+    items: parseList(w.items), notes: parseList(w.notes), status: w.status, openedAt: w.openedAt, editedAt: w.editedAt, signedAt: w.signedAt,
+    review, reviewedBy: sub ? (sub.decidedLabel || userName(sub.decidedBy) || '') : '', reviewedAt: sub ? sub.decidedAt : '',
+    score: sub && sub.score ? Number(sub.score) : null, reviewText: sub ? sub.reviewText : '', decisionNote: sub ? sub.decisionNote : '',
+    invoice: inv ? invoiceView(inv) : null
+  };
+}
+
+function workOrdersView(user) {
+  const subs = {}; readTable('WorkSubmissions').filter(x => x.userId === user.id && x.woId).forEach(x => subs[x.id] = x);
+  const invs = {}; readTable('Invoices').filter(i => i.userId === user.id).forEach(i => invs[i.woId] = i);
+  const vessels = {}; readTable('Vessels').filter(v => isTrue(v.active)).forEach(v => vessels[v.id] = v.name);
+  const boats = readTable('Memberships').filter(m => m.userId === user.id && m.status === 'active' && vessels[m.vesselId])
+    .map(m => ({ vesselId: m.vesselId, vesselName: vessels[m.vesselId] }));
+  const list = readTable('WorkOrders').filter(w => w.userId === user.id)
+    .sort((a, b) => a.editedAt < b.editedAt ? 1 : -1).map(w => woView(w, subs, invs, vessels));
+  return { ok: true, business: businessView(user), workOrders: list, boats, currencies: WO_CURRENCIES };
+}
+
+function myWorkOrder(user, id) {
+  const w = readTable('WorkOrders').find(x => x.id === id && x.userId === user.id);
+  if (!w) throw new Error('Work order not found');
+  return w;
+}
+
+function oneWorkOrder(user, w) {
+  const v = workOrdersView(user);
+  return Object.assign(v, { workOrder: v.workOrders.find(x => x.id === w.id) });
+}
+
+function createWorkOrder(user, w) {
+  requireContractor(user);
+  const title = clip(w.title, 200);
+  if (!title) throw new Error('Say what the job is');
+  let vesselId = '', boatName = '', contactEmail = String(w.contactEmail || '').trim().toLowerCase(), contactName = clip(w.contactName, 80);
+  if (w.vesselId) {
+    const m = readTable('Memberships').find(x => x.userId === user.id && x.vesselId === w.vesselId && x.status === 'active');
+    const v = m && readTable('Vessels').find(x => x.id === w.vesselId && isTrue(x.active));
+    if (!v) throw new Error('Choose one of your boats, or type the boat name');
+    vesselId = v.id; boatName = v.name;
+    if (contactEmail && !emailOk(contactEmail)) throw new Error('That email does not look right');
+  } else {
+    boatName = clip(w.boatName, 80);
+    if (!boatName) throw new Error('Name the boat');
+    if (!emailOk(contactEmail)) throw new Error('Enter the Captain or Owner\'s email. The work goes to them for review and the invoice is sent there.');
+  }
+  if (contactEmail && contactEmail === user.email) throw new Error('Enter the Captain or Owner\'s email, not your own');
+  const now = nowIso();
+  const row = { id: newId('WO'), number: nextDocNumber('WorkOrders', user.id, 'WO'), userId: user.id, vesselId, boatName,
+                contactName, contactEmail, title, description: clip(w.description, 2000), items: '[]', notes: '[]', status: 'open',
+                submissionId: '', openedAt: now, editedAt: now, signedAt: '' };
+  insert('WorkOrders', row);
+  audit(user.id, 'createWorkOrder', '', row.number + ': ' + title + ' (' + boatName + ')', vesselId);
+  return oneWorkOrder(user, row);
+}
+
+function saveWorkOrder(user, id, w) {
+  const row = myWorkOrder(user, id);
+  if (row.status !== 'open') throw new Error(row.status === 'approved' ? 'This work order was approved and is closed' : 'This work order is with the Captain for review. Take it back to change it.');
+  if (w.editedAt && w.editedAt !== row.editedAt) throw new Error('This work order was changed in another window. Reload it, then make your change again.');
+  if (w.title !== undefined) {
+    row.title = clip(w.title, 200);
+    if (!row.title) throw new Error('Say what the job is');
+  }
+  if (w.description !== undefined) row.description = clip(w.description, 2000);
+  if (w.contactName !== undefined) row.contactName = clip(w.contactName, 80);
+  if (w.contactEmail !== undefined) {
+    const e = String(w.contactEmail || '').trim().toLowerCase();
+    if (e && !emailOk(e)) throw new Error('That email does not look right');
+    if (!e && !row.vesselId) throw new Error('Enter the Captain or Owner\'s email');
+    if (e && e === user.email) throw new Error('Enter the Captain or Owner\'s email, not your own');
+    row.contactEmail = e;
+  }
+  if (w.boatName !== undefined && !row.vesselId) {
+    row.boatName = clip(w.boatName, 80);
+    if (!row.boatName) throw new Error('Name the boat');
+  }
+  if (w.items !== undefined) row.items = JSON.stringify(cleanItems(w.items, parseList(row.items), user));
+  if (w.addNote && String(w.addNote).trim()) {
+    const notes = parseList(row.notes);
+    notes.push({ id: newId('N'), text: clip(w.addNote, 1000), at: nowIso() });
+    row.notes = JSON.stringify(notes.slice(-100));
+  }
+  if (row.items.length + row.notes.length > WO_MAX_JSON) throw new Error('This work order is too long to save. Split it into two work orders.');
+  row.editedAt = nowIso();
+  update('WorkOrders', row._row, row);
+  return oneWorkOrder(user, row);
+}
+
+/** Signs off the whole work order and sends it to the Captain or Owner, in the app or by email. */
+function submitWorkOrder(user, id, o) {
+  requireContractor(user);
+  const row = myWorkOrder(user, id);
+  if (row.status !== 'open') throw new Error('This work order was already sent');
+  const items = parseList(row.items);
+  if (!items.length) throw new Error('Add at least one item first');
+  const open = items.filter(i => !i.sign);
+  if (open.length) throw new Error('Sign every item first. Not signed: ' + open.map(i => i.no).join(', '));
+  const dates = [];
+  items.forEach(i => (i.labor || []).forEach(l => dates.push(l.date)));
+  dates.sort();
+  let performedDate = dates.length ? dates[dates.length - 1] : today();
+  if (performedDate < addInterval(today(), -365, 'days')) performedDate = today();
+
+  let vessel = null;
+  if (row.vesselId) vessel = readTable('Vessels').find(v => v.id === row.vesselId && isTrue(v.active)) || null;
+  if (!vessel && row.contactEmail) vessel = vesselForReviewer(row.contactEmail, row.boatName);
+  const reviewers = vessel ? vesselReviewers(vessel.id, user.id) : [];
+  if (!reviewers.length) vessel = null;
+  if (!vessel && !emailOk(row.contactEmail)) throw new Error(row.boatName + ' has no Captain or Owner on CJM Marine yet. Add their email so they can review it.');
+
+  const hours = items.reduce((s, i) => s + itemHours(i), 0);
+  const summary = clip((row.description ? row.description + '\n\n' : '') + woSummary(items), 3000);
+  const sub = {
+    id: newId('J'), kind: 'workorder', vesselId: vessel ? vessel.id : '', boatName: vessel ? vessel.name : row.boatName, userId: user.id,
+    title: clip(row.number + ': ' + row.title, 200), system: items.length === 1 ? items[0].system : '', description: summary,
+    performedDate, dueDate: '', recurring: 'FALSE', intervalValue: '', intervalUnit: '',
+    wantScore: o && o.wantScore === false ? 'FALSE' : 'TRUE', contactEmail: row.contactEmail, contactName: row.contactName,
+    token: '', tokenExpires: '', status: 'pending', decidedBy: '', decidedLabel: '', decidedAt: '', decisionNote: '',
+    score: '', reviewText: '', taskId: '', completionId: '', createdAt: nowIso(), senderSeen: '', woId: row.id
+  };
+  if (!vessel) {
+    sub.token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+    sub.tokenExpires = addInterval(today(), WORK_LINK_DAYS, 'days');
+  }
+  insert('WorkSubmissions', sub);
+  row.status = 'review'; row.submissionId = sub.id; row.signedAt = nowIso(); row.editedAt = row.signedAt;
+  if (vessel) { row.vesselId = vessel.id; row.boatName = vessel.name; }
+  update('WorkOrders', row._row, row);
+  const inv = readTable('Invoices').find(i => i.woId === row.id);
+  if (inv && vessel && inv.vesselId !== vessel.id) { inv.vesselId = vessel.id; inv.boatName = vessel.name; update('Invoices', inv._row, inv); }
+  audit(user.id, 'submitWorkOrder', '', row.number + ': ' + row.title + ' (' + sub.boatName + (vessel ? '' : ', ' + row.contactEmail) + ')', sub.vesselId);
+
+  const details = '<p><b>' + esc(row.number + ': ' + row.title) + '</b><br>' + items.length + ' item' + (items.length > 1 ? 's' : '') +
+    (hours ? ', ' + (Math.round(hours * 10) / 10) + ' hr' : '') + ', finished ' + performedDate + '</p>' +
+    '<ol>' + items.map(i => '<li><b>' + esc(i.title) + '</b>' + (i.corrective ? '<br>' + esc(i.corrective) : '') + '</li>').join('') + '</ol>' +
+    (inv && inv.status !== 'draft' ? '<p>Invoice ' + esc(inv.number) + ' was sent separately.</p>' : '');
+  let message;
+  if (vessel) {
+    sendMail(reviewers.map(r => r.email).join(','), 'Approve work order: ' + user.name + ', ' + row.title,
+      '<p><b>' + esc(user.name) + '</b> signed off a work order on ' + esc(vessel.name) + ' and asks for your approval.</p>' + details +
+      '<p>Nothing is added to the vessel\'s log until you approve it. You can add it as a new entry or sign off one of your open tasks with it. Open the <b>Reviews</b> tab.</p>' + appLink());
+    message = row.number + ' sent to the Captain or Owner of ' + vessel.name + ' for approval.';
+  } else {
+    const link = siteUrl() + '/?w=' + sub.token;
+    sendMail(row.contactEmail, user.name + ' asks you to confirm work on ' + row.boatName,
+      '<p>' + (row.contactName ? 'Hello ' + esc(row.contactName) + ',</p><p>' : '') + '<b>' + esc(user.name) + '</b> finished this work order on <b>' +
+      esc(row.boatName) + '</b> and named you as its Captain or Owner:</p>' + details +
+      '<p><a href="' + link + '" style="display:inline-block;background:#12324a;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none">Review the work</a></p>' +
+      '<p>No account is needed. You can confirm it, give it a score from 1 to 10, or decline it. The link works for ' + WORK_LINK_DAYS + ' days.</p>' +
+      '<p style="color:#5b6b78">CJM Marine keeps yacht maintenance logs, crew and rotations in one place. If you would like ' + esc(row.boatName) +
+      ' on it, you can <a href="' + joinUrl(row.boatName) + '">request it here</a>. This is optional.</p>');
+    message = row.number + ' emailed to ' + row.contactEmail + ' for review.';
+  }
+  return Object.assign(oneWorkOrder(user, row), { message });
+}
+
+/** Takes a work order back from review (withdrawn, declined or expired) so it can be changed and sent again. */
+function reopenWorkOrder(user, id) {
+  const row = myWorkOrder(user, id);
+  if (row.status === 'open') return oneWorkOrder(user, row);
+  const sub = row.submissionId && readTable('WorkSubmissions').find(x => x.id === row.submissionId);
+  if (sub && sub.status === 'approved') throw new Error('This work order was approved. Open a new one for more work.');
+  if (sub && sub.status === 'pending') { sub.status = 'cancelled'; sub.token = ''; update('WorkSubmissions', sub._row, sub); }
+  row.status = 'open'; row.submissionId = ''; row.signedAt = ''; row.editedAt = nowIso();
+  update('WorkOrders', row._row, row);
+  audit(user.id, 'reopenWorkOrder', '', row.number, row.vesselId);
+  return oneWorkOrder(user, row);
+}
+
+/** Keeps the work order's state in step with the review (called when a submission is answered). */
+function syncWorkOrder(sub) {
+  if (!sub || !sub.woId) return;
+  const row = readTable('WorkOrders').find(w => w.id === sub.woId);
+  if (!row || row.submissionId !== sub.id) return;
+  if (sub.status === 'approved' && row.status !== 'approved') { row.status = 'approved'; update('WorkOrders', row._row, row); }
+}
+
+// ── invoices ──
+function invTotals(d) {
+  const labor = (d.items || []).reduce((s, it) => s + woNum(it.hoursBilled) * woNum(it.rate), 0);
+  const parts = (d.items || []).reduce((s, it) => s + (it.parts || []).reduce((n, p) => n + woNum(p.qty) * woNum(p.price), 0), 0);
+  const charges = (d.charges || []).reduce((s, c) => s + woNum(c.qty) * woNum(c.rate), 0);
+  const c = d.consumables || {};
+  const consumables = c.mode === 'percent' ? labor * woNum(c.value) / 100 : woNum(c.value);
+  const sub = labor + parts + charges + consumables;
+  const tax = sub * woNum(d.taxRate) / 100;
+  const r = (n) => Math.round(n * 100) / 100;
+  return { labor: r(labor), parts: r(parts), charges: r(charges), consumables: r(consumables), sub: r(sub), tax: r(tax), total: r(sub + tax) };
+}
+
+function billToFor(row) {
+  if (row.contactEmail) return { name: row.contactName || '', email: row.contactEmail };
+  const r = row.vesselId ? vesselReviewers(row.vesselId, row.userId)[0] : null;
+  return r ? { name: r.name, email: r.email } : { name: '', email: '' };
+}
+
+function buildInvoiceData(user, row) {
+  const b = businessView(user);
+  const bill = billToFor(row);
+  return {
+    billToName: bill.name, billToEmail: bill.email, currency: b.currency,
+    items: parseList(row.items).map(it => ({
+      id: newId('V'), itemId: it.id, no: it.no, label: (it.system ? it.system + ': ' : '') + it.title, corrective: it.corrective || '',
+      hoursLogged: String(Math.round(itemHours(it) * 100) / 100), hoursBilled: String(Math.round(itemHours(it) * 100) / 100), rate: b.rate,
+      parts: (it.parts || []).filter(p => !p.naOn || p.price).map(p => ({ id: newId('Q'), pn: p.pnOn || p.pnOff, desc: p.desc, qty: p.qty || '1', price: p.price }))
+    })),
+    charges: [],
+    consumables: { mode: b.consumablesPct ? 'percent' : 'flat', value: b.consumablesPct || '' },
+    taxRate: b.taxRate,
+    pay: { to: b.payTo || b.name || user.name, address: b.payAddress || '', how: b.payHow || '', terms: b.payTerms || '' },
+    notes: ''
+  };
+}
+
+function cleanInvoiceData(d) {
+  d = d || {};
+  const out = {
+    billToName: clip(d.billToName, 100), billToEmail: clip(d.billToEmail, 120).toLowerCase(),
+    currency: WO_CURRENCIES.indexOf(d.currency) !== -1 ? d.currency : 'USD',
+    items: (Array.isArray(d.items) ? d.items : []).slice(0, WO_MAX_ITEMS + 20).map((it, i) => ({
+      id: woId(it.id, 'V'), itemId: clip(it.itemId, 40), no: Number(it.no) || i + 1, label: clip(it.label, 260), corrective: clip(it.corrective, 600),
+      hoursLogged: woAmount(it.hoursLogged, 10000) || '0', hoursBilled: woAmount(it.hoursBilled, 10000), rate: woAmount(it.rate, 100000),
+      parts: (Array.isArray(it.parts) ? it.parts : []).slice(0, 40).map(p => ({ id: woId(p.id, 'Q'), pn: clip(p.pn, 60), desc: clip(p.desc, 150),
+        qty: woAmount(p.qty, 10000) || '1', price: woAmount(p.price, 1000000) }))
+    })).filter(it => it.label),
+    charges: (Array.isArray(d.charges) ? d.charges : []).slice(0, 40).map(c => ({ id: woId(c.id, 'C'),
+      kind: WO_CHARGE_KINDS.indexOf(c.kind) !== -1 ? c.kind : 'other', desc: clip(c.desc, 150),
+      qty: woAmount(c.qty, 100000) || '1', rate: woAmount(c.rate, 1000000) })).filter(c => woNum(c.rate) > 0),
+    consumables: { mode: d.consumables && d.consumables.mode === 'percent' ? 'percent' : 'flat',
+                   value: woAmount(d.consumables && d.consumables.value, d.consumables && d.consumables.mode === 'percent' ? 100 : 1000000) },
+    taxRate: woAmount(d.taxRate, 50),
+    pay: { to: clip(d.pay && d.pay.to, 120), address: clip(d.pay && d.pay.address, 400), how: clip(d.pay && d.pay.how, 400), terms: clip(d.pay && d.pay.terms, 120) },
+    notes: clip(d.notes, 1000)
+  };
+  if (out.billToEmail && !emailOk(out.billToEmail)) throw new Error('The bill-to email does not look right');
+  if (JSON.stringify(out).length > WO_MAX_JSON) throw new Error('This invoice is too long to save');
+  return out;
+}
+
+function invoiceData(inv) { try { return JSON.parse(inv.data || '{}'); } catch (e) { return {}; } }
+
+function invoiceLink(inv) { return inv.token ? siteUrl() + '/?inv=' + inv.token : ''; }
+
+function invoiceView(inv) {
+  const d = invoiceData(inv);
+  return { id: inv.id, number: inv.number, woId: inv.woId, data: d, totals: invTotals(d), total: Number(inv.total) || 0, currency: inv.currency || d.currency || 'USD',
+           status: inv.status, createdAt: inv.createdAt, editedAt: inv.editedAt, sentAt: inv.sentAt, sentTo: inv.sentTo,
+           paidAt: inv.paidAt, paidNote: inv.paidNote, link: inv.status === 'draft' ? '' : invoiceLink(inv) };
+}
+
+function myInvoice(user, id) {
+  const inv = readTable('Invoices').find(i => i.id === id && i.userId === user.id);
+  if (!inv) throw new Error('Invoice not found');
+  return inv;
+}
+
+function createInvoice(user, woId) {
+  requireContractor(user);
+  const row = myWorkOrder(user, woId);
+  if (readTable('Invoices').some(i => i.woId === row.id)) throw new Error('This work order already has an invoice');
+  if (!parseList(row.items).length) throw new Error('Add the work items first. The invoice is built from them.');
+  const d = buildInvoiceData(user, row);
+  const now = nowIso();
+  const inv = { id: newId('INV'), number: nextDocNumber('Invoices', user.id, 'INV'), woId: row.id, userId: user.id, vesselId: row.vesselId,
+                boatName: row.boatName, data: JSON.stringify(d), total: String(invTotals(d).total), currency: d.currency, status: 'draft',
+                token: '', createdAt: now, editedAt: now, sentAt: '', sentTo: '', paidAt: '', paidNote: '' };
+  insert('Invoices', inv);
+  audit(user.id, 'createInvoice', '', inv.number + ' from ' + row.number, row.vesselId);
+  return oneWorkOrder(user, row);
+}
+
+function saveInvoice(user, id, data) {
+  const inv = myInvoice(user, id);
+  if (inv.status === 'paid') throw new Error('This invoice is marked paid. Mark it unpaid to change it.');
+  const d = cleanInvoiceData(data);
+  const before = Number(inv.total) || 0;
+  inv.data = JSON.stringify(d); inv.total = String(invTotals(d).total); inv.currency = d.currency; inv.editedAt = nowIso();
+  update('Invoices', inv._row, inv);
+  if (before !== Number(inv.total)) audit(user.id, 'editInvoice', '', inv.number + ': total ' + before + ' → ' + inv.total, inv.vesselId);
+  return oneWorkOrder(user, myWorkOrder(user, inv.woId));
+}
+
+function fmtMoney(n, cur) {
+  const sym = { USD: '$', EUR: '€', GBP: '£', AUD: 'A$', CAD: 'C$', CHF: 'CHF ' }[cur] || '';
+  const v = (Math.round((Number(n) || 0) * 100) / 100).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return sym + v;
+}
+
+function sendInvoice(user, id) {
+  requireContractor(user);
+  const inv = myInvoice(user, id);
+  const d = invoiceData(inv);
+  if (!emailOk(d.billToEmail || '')) throw new Error('Add the email to send the invoice to (Bill to)');
+  if (!(Number(inv.total) > 0)) throw new Error('The invoice total is zero. Add hours, rates or parts first.');
+  const cache = CacheService.getScriptCache();
+  const key = 'inv_' + user.id + '_' + today();
+  const n = Number(cache.get(key) || 0);
+  if (n >= INVOICE_EMAILS_PER_DAY) throw new Error('You can email up to ' + INVOICE_EMAILS_PER_DAY + ' invoices a day');
+  cache.put(key, String(n + 1), 86400);
+  const row = myWorkOrder(user, inv.woId);
+  if (!inv.token) inv.token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+  const b = businessView(user);
+  const t = invTotals(d);
+  const link = invoiceLink(inv);
+  const pay = d.pay || {};
+  const ok = sendMail(d.billToEmail, 'Invoice ' + inv.number + ' from ' + (b.name || user.name) + ': ' + fmtMoney(t.total, inv.currency),
+    '<p>' + (d.billToName ? 'Hello ' + esc(d.billToName) + ',</p><p>' : '') + '<b>' + esc(b.name || user.name) + '</b> sent you invoice <b>' + esc(inv.number) +
+    '</b> for ' + esc(row.number + ': ' + row.title) + ' on ' + esc(row.boatName) + '.</p>' +
+    '<p style="font-size:22px;font-weight:bold;margin:8px 0">' + esc(fmtMoney(t.total, inv.currency)) + '</p>' +
+    (pay.terms ? '<p>Terms: ' + esc(pay.terms) + '</p>' : '') +
+    '<p><a href="' + link + '" style="display:inline-block;background:#12324a;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none">View and print the invoice</a></p>' +
+    (pay.to || pay.how ? '<p><b>How to pay</b><br>' + (pay.to ? 'Make payment out to ' + esc(pay.to) + '<br>' : '') +
+      esc(pay.how || '').replace(/\n/g, '<br>') + '</p>' : '') +
+    '<p style="color:#5b6b78">CJM Marine does not take or hold payments. Pay ' + esc(b.name || user.name) + ' directly using the details on the invoice.</p>');
+  if (!ok) throw new Error('The email could not be sent. Try again later.');
+  if (inv.status !== 'paid') inv.status = 'sent';
+  inv.sentAt = nowIso(); inv.sentTo = d.billToEmail; inv.vesselId = row.vesselId; inv.boatName = row.boatName;
+  update('Invoices', inv._row, inv);
+  audit(user.id, 'sendInvoice', '', inv.number + ' ' + fmtMoney(t.total, inv.currency) + ' to ' + d.billToEmail, inv.vesselId);
+  return Object.assign(oneWorkOrder(user, row), { message: inv.number + ' emailed to ' + d.billToEmail + '.' });
+}
+
+function setInvoicePaid(user, id, paid, note) {
+  const inv = myInvoice(user, id);
+  if (paid) { inv.status = 'paid'; inv.paidAt = nowIso(); inv.paidNote = clip(note, 200); }
+  else { inv.status = inv.sentAt ? 'sent' : 'draft'; inv.paidAt = ''; inv.paidNote = ''; }
+  update('Invoices', inv._row, inv);
+  audit(user.id, paid ? 'invoicePaid' : 'invoiceUnpaid', '', inv.number + (inv.paidNote ? ': ' + inv.paidNote : ''), inv.vesselId);
+  return oneWorkOrder(user, myWorkOrder(user, inv.woId));
+}
+
+/** The invoice as the customer sees it from the emailed link (no account). */
+function getInvoice(token) {
+  const inv = token && readTable('Invoices').find(i => i.token && i.token === String(token));
+  if (!inv) throw new Error('This invoice link is not valid.');
+  const u = readTable('Users').find(x => x.id === inv.userId) || {};
+  const b = businessView(u);
+  const row = readTable('WorkOrders').find(w => w.id === inv.woId) || {};
+  const v = invoiceView(inv);
+  return { ok: true, invoice: Object.assign(v, { link: '' }),
+           business: { name: b.name || u.name || '', phone: b.phone, email: b.email || u.email || '', address: b.address, credential: b.credential },
+           contractorName: u.name || '', workOrder: { number: row.number || '', title: row.title || '', boatName: row.boatName || inv.boatName || '',
+           signedAt: row.signedAt || '' } };
+}
+
+/** Invoices sent for work on a boat, for its Captain and Owner (Reviews tab). */
+function vesselInvoices(vesselId) {
+  const names = crewNames();
+  return readTable('Invoices').filter(i => i.vesselId === vesselId && i.status !== 'draft')
+    .sort((a, b) => a.sentAt < b.sentAt ? 1 : -1).slice(0, 30)
+    .map(i => ({ id: i.id, number: i.number, contractor: names[i.userId] || '', business: (businessOf(i.userId) || {}).name || '',
+                 total: Number(i.total) || 0, currency: i.currency || 'USD', status: i.status, sentAt: i.sentAt, paidAt: i.paidAt,
+                 link: invoiceLink(i) }));
+}
+
+function invoiceSummary(woId) {
+  const i = readTable('Invoices').find(k => k.woId === woId && k.status !== 'draft');
+  return i ? { number: i.number, total: Number(i.total) || 0, currency: i.currency || 'USD', status: i.status, link: invoiceLink(i) } : null;
 }

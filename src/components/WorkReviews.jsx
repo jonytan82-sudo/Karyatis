@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { call } from '../api.js';
 import { fmtDate, fmtStamp, isoDate } from '../util.js';
 import { AttachmentList } from './Attachments.jsx';
+import { money } from '../workorders.js';
 
 function ScorePicker({ value, onChange }) {
   return (
@@ -56,14 +57,14 @@ function Every({ f, setF }) {
 }
 
 /** A suggestion, unlisted work or a job by someone not on the crew, waiting for the Captain or Owner. */
-function Approval({ a, onDecide, busy }) {
+function Approval({ a, onDecide, busy, openTasks = [] }) {
   const suggest = a.kind === 'suggest';
   const [f, setF] = useState({ dueDate: a.dueDate || inDays(7), recurring: suggest && a.recurring, intervalValue: a.intervalValue || '',
-    intervalUnit: a.intervalUnit || 'months', assignToThem: a.onCrew, score: 0, text: '', note: '' });
+    intervalUnit: a.intervalUnit || 'months', assignToThem: a.onCrew, score: 0, text: '', note: '', taskId: '' });
   const decide = (approve) => onDecide(a.id, approve ? {
     approve: true, note: f.note,
-    ...(suggest ? { dueDate: f.dueDate, assignToThem: f.assignToThem } : { score: f.score || undefined, text: f.text }),
-    recurring: f.recurring, intervalValue: f.intervalValue, intervalUnit: f.intervalUnit,
+    ...(suggest ? { dueDate: f.dueDate, assignToThem: f.assignToThem } : { score: f.score || undefined, text: f.text, taskId: f.taskId || undefined }),
+    recurring: f.recurring && !f.taskId, intervalValue: f.intervalValue, intervalUnit: f.intervalUnit,
   } : { approve: false, note: f.note });
   return (
     <li className="wr card approval">
@@ -76,8 +77,23 @@ function Approval({ a, onDecide, busy }) {
       </div>
       <small className="muted">{a.performedDate ? `Done ${fmtDate(a.performedDate)}` : a.dueDate ? `Suggested by ${fmtDate(a.dueDate)}` : 'Suggested'}, sent {fmtStamp(a.createdAt)}</small>
       {!a.onCrew && <p className="hint">Not on your crew. Approving adds this job to your maintenance log.</p>}
-      {a.description && <p className="wr-notes">{a.description}</p>}
+      {a.description && <p className="wr-notes pre">{a.description}</p>}
       <AttachmentList items={a.attachments} action="getWorkFile" />
+      {a.invoice && (
+        <p className="hint">Invoice {a.invoice.number}, {money(a.invoice.total, a.invoice.currency)}{a.invoice.status === 'paid' ? ', paid' : ''}. <a href={a.invoice.link} target="_blank" rel="noreferrer">View invoice</a></p>
+      )}
+      {!suggest && (
+        <label className="wr-attach">Add to the log as
+          <select value={f.taskId} onChange={(e) => setF({ ...f, taskId: e.target.value })}>
+            <option value="">A new entry in the maintenance log</option>
+            {openTasks.length > 0 && (
+              <optgroup label="Sign off one of your open tasks with it">
+                {openTasks.map((t) => <option key={t.id} value={t.id}>{t.title}{t.dueDate ? `, due ${fmtDate(t.dueDate)}` : t.type === 'Issue' ? ' (issue)' : ''}</option>)}
+              </optgroup>
+            )}
+          </select>
+        </label>
+      )}
       {suggest ? (
         <div className="two">
           <label>Due date<input type="date" value={f.dueDate} onChange={(e) => setF({ ...f, dueDate: e.target.value })} /></label>
@@ -90,12 +106,12 @@ function Approval({ a, onDecide, busy }) {
           {f.score > 0 && <textarea rows={2} value={f.text} onChange={(e) => setF({ ...f, text: e.target.value })} placeholder="What went well, what to improve (optional)" aria-label="Review" />}
         </>
       )}
-      <label className="check"><input type="checkbox" checked={f.recurring} onChange={(e) => setF({ ...f, recurring: e.target.checked })} /> {suggest ? 'Repeats on a schedule' : 'Make it a recurring task from this date'}</label>
-      {f.recurring && <Every f={f} setF={setF} />}
+      {(suggest || !f.taskId) && <label className="check"><input type="checkbox" checked={f.recurring} onChange={(e) => setF({ ...f, recurring: e.target.checked })} /> {suggest ? 'Repeats on a schedule' : 'Make it a recurring task from this date'}</label>}
+      {f.recurring && (suggest || !f.taskId) && <Every f={f} setF={setF} />}
       <input value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} placeholder="Note to them (optional)" aria-label="Note" />
       <div className="actions left">
-        <button className="btn primary" disabled={busy || (f.recurring && !f.intervalValue)} onClick={() => decide(true)}>
-          {suggest ? 'Approve, add to tasks' : f.score ? `Approve with ${f.score}/10` : 'Approve into the log'}
+        <button className="btn primary" disabled={busy || (f.recurring && !f.taskId && !f.intervalValue)} onClick={() => decide(true)}>
+          {suggest ? 'Approve, add to tasks' : f.taskId ? (f.score ? `Approve and sign off the task, ${f.score}/10` : 'Approve and sign off the task') : f.score ? `Approve with ${f.score}/10` : 'Approve into the log'}
         </button>
         <button className="btn" disabled={busy} onClick={() => decide(false)}>Decline</button>
       </div>
@@ -123,11 +139,11 @@ export default function WorkReviews({ vessel, onChanged }) {
       {error && <div className="alert">{error}</div>}
       <section className="group">
         <h3>Waiting for your approval <span className="count">{ap.pending.length}</span></h3>
-        <p className="hint">Tasks crew suggest, work they did that was not in the list, and jobs by contractors. Nothing is added to the vessel's log until you approve it.</p>
+        <p className="hint">Tasks crew suggest, work they did that was not in the list, and contractor work orders. Nothing is added to the vessel's log until you approve it. A job can become a new entry or sign off one of your open tasks.</p>
         {!ap.pending.length && <p className="empty">Nothing waiting.</p>}
         <ul className="wr-list">
           {ap.pending.map((a) => (
-            <Approval key={a.id} a={a} busy={busy} onDecide={(id, decision) => run(() => call('decideWork', { id, decision }))} />
+            <Approval key={a.id} a={a} busy={busy} openTasks={ap.openTasks || []} onDecide={(id, decision) => run(() => call('decideWork', { id, decision }))} />
           ))}
         </ul>
       </section>
@@ -143,6 +159,24 @@ export default function WorkReviews({ vessel, onChanged }) {
           ))}
         </ul>
       </section>
+      {(ap.invoices || []).length > 0 && (
+        <section className="group">
+          <h3>Contractor invoices <span className="count">{ap.invoices.length}</span></h3>
+          <p className="hint">Invoices contractors sent for work on this boat. Pay them directly using the details on the invoice; CJM Marine does not take payments.</p>
+          <ul className="crew-list">
+            {ap.invoices.map((i) => (
+              <li key={i.id}>
+                <span className="crew-who">
+                  <b>{i.business || i.contractor}</b>
+                  <small>{i.number}, sent {fmtStamp(i.sentAt)}{i.status === 'paid' ? `, marked paid ${fmtStamp(i.paidAt)}` : ''}</small>
+                  <a href={i.link} target="_blank" rel="noreferrer">View invoice</a>
+                </span>
+                <span className="score big">{money(i.total, i.currency)}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {ap.done.length > 0 && (
         <section className="group">
           <h3>Recently approved or declined</h3>

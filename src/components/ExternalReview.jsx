@@ -35,7 +35,7 @@ export default function ExternalReview({ token }) {
             <div className="ext-job">
               <b>{j.title}</b>
               <small>{[j.system, j.performedDate && `done ${fmtDate(j.performedDate)}`].filter(Boolean).join(', ')}</small>
-              {j.description && <p>{j.description}</p>}
+              {j.description && <p className="pre">{j.description}</p>}
               <AttachmentList items={j.attachments} action="workReviewFile" extra={{ reviewToken: token }} />
             </div>
 
