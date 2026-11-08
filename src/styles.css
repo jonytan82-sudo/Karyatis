@@ -1483,3 +1483,12 @@ button.gauge-cell.focus span { color: #fff; text-decoration: underline; }
   .lx-work-grid { grid-template-columns: 1fr; }
   .lx-work-art .lx-paper { width: 78%; }
 }
+/* work order: boat search */
+.boat-pick { position: relative; }
+.boat-options { list-style: none; margin: 0.25rem 0 0; padding: 0.25rem; position: absolute; left: 0; right: 0; z-index: 20; background: var(--paper);
+  border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 10px 24px rgba(15,42,66,0.16); max-height: 18rem; overflow-y: auto; }
+.boat-options button { display: flex; flex-direction: column; align-items: flex-start; gap: 0.1rem; width: 100%; text-align: left; background: none; border: 0;
+  padding: 0.55rem 0.65rem; border-radius: 6px; cursor: pointer; font: inherit; color: inherit; }
+.boat-options button:hover, .boat-options button:focus-visible { background: var(--chart); }
+.boat-options small { color: var(--muted); font-size: 0.85rem; }
+.boat-picked { margin: 0; }

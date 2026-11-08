@@ -435,6 +435,8 @@ function doPost(e) {
       saveWorkOrder:   () => withLock(() => saveWorkOrder(user, req.id, req.workOrder || {})),
       submitWorkOrder: () => withLock(() => submitWorkOrder(user, req.id, req.options || {})),
       reopenWorkOrder: () => withLock(() => reopenWorkOrder(user, req.id)),
+      findBoats:       () => findBoats(user, req.q),
+      linkWorkOrder:   () => withLock(() => linkWorkOrder(user, req.id, req.vesselId)),
       createInvoice:   () => withLock(() => createInvoice(user, req.woId)),
       saveInvoice:     () => withLock(() => saveInvoice(user, req.id, req.invoice || {})),
       sendInvoice:     () => withLock(() => sendInvoice(user, req.id)),
@@ -4793,8 +4795,20 @@ function woView(w, subs, invs, vessels) {
     items: parseList(w.items), notes: parseList(w.notes), status: w.status, openedAt: w.openedAt, editedAt: w.editedAt, signedAt: w.signedAt,
     review, reviewedBy: sub ? (sub.decidedLabel || userName(sub.decidedBy) || '') : '', reviewedAt: sub ? sub.decidedAt : '',
     score: sub && sub.score ? Number(sub.score) : null, reviewText: sub ? sub.reviewText : '', decisionNote: sub ? sub.decisionNote : '',
-    invoice: inv ? invoiceView(inv) : null
+    invoice: inv ? invoiceView(inv) : null,
+    approvers: w.vesselId ? vesselReviewers(w.vesselId, w.userId).map(u => u.name) : [],
+    match: !w.vesselId && w.status === 'open' ? boatMatch(w.boatName, w.userId) : null
   };
+}
+
+/** An exact name match on CJM Marine for a work order typed as "another boat" (offered, never applied without the contractor's say). */
+function boatMatch(name, userId) {
+  const key = normVessel(name);
+  if (!key) return null;
+  const vs = readTable('Vessels').filter(v => isTrue(v.active) && !v.deletedAt && normVessel(v.name) === key);
+  if (vs.length !== 1) return null;
+  const caps = vesselReviewers(vs[0].id, userId);
+  return caps.length ? { vesselId: vs[0].id, vesselName: vs[0].name, homePort: vs[0].homePort || '', approvers: caps.map(c => c.name) } : null;
 }
 
 function workOrdersView(user) {
@@ -4802,7 +4816,7 @@ function workOrdersView(user) {
   const invs = {}; readTable('Invoices').filter(i => i.userId === user.id).forEach(i => invs[i.woId] = i);
   const vessels = {}; readTable('Vessels').filter(v => isTrue(v.active)).forEach(v => vessels[v.id] = v.name);
   const boats = readTable('Memberships').filter(m => m.userId === user.id && m.status === 'active' && vessels[m.vesselId])
-    .map(m => ({ vesselId: m.vesselId, vesselName: vessels[m.vesselId] }));
+    .map(m => ({ vesselId: m.vesselId, vesselName: vessels[m.vesselId], approvers: vesselReviewers(m.vesselId, user.id).map(u => u.name) }));
   const list = readTable('WorkOrders').filter(w => w.userId === user.id)
     .sort((a, b) => a.editedAt < b.editedAt ? 1 : -1).map(w => woView(w, subs, invs, vessels));
   return { ok: true, business: businessView(user), workOrders: list, boats, currencies: WO_CURRENCIES };
@@ -4825,10 +4839,14 @@ function createWorkOrder(user, w) {
   if (!title) throw new Error('Say what the job is');
   let vesselId = '', boatName = '', contactEmail = String(w.contactEmail || '').trim().toLowerCase(), contactName = clip(w.contactName, 80);
   if (w.vesselId) {
-    const m = readTable('Memberships').find(x => x.userId === user.id && x.vesselId === w.vesselId && x.status === 'active');
-    const v = m && readTable('Vessels').find(x => x.id === w.vesselId && isTrue(x.active));
-    if (!v) throw new Error('Choose one of your boats, or type the boat name');
+    // one of my boats, or a boat picked from the CJM Marine list (it must have a Captain or Owner to approve the work)
+    const v = readTable('Vessels').find(x => x.id === w.vesselId && isTrue(x.active) && !x.deletedAt);
+    if (!v) throw new Error('That boat is not on CJM Marine any more. Type the boat name instead.');
+    const mine = readTable('Memberships').some(x => x.userId === user.id && x.vesselId === v.id && x.status === 'active');
+    const caps = vesselReviewers(v.id, user.id);
+    if (!mine && !caps.length) throw new Error(v.name + ' has no Captain or Owner on CJM Marine yet. Type the boat name and their email instead.');
     vesselId = v.id; boatName = v.name;
+    if (!contactName && caps.length) contactName = caps.map(c => c.name).join(', ');
     if (contactEmail && !emailOk(contactEmail)) throw new Error('That email does not look right');
   } else {
     boatName = clip(w.boatName, 80);
@@ -4876,6 +4894,41 @@ function saveWorkOrder(user, id, w) {
   row.editedAt = nowIso();
   update('WorkOrders', row._row, row);
   return oneWorkOrder(user, row);
+}
+
+/** Boats on CJM Marine whose name matches what the contractor typed, with the names of who approves work there (no emails). */
+function findBoats(user, q) {
+  requireContractor(user);
+  const key = normVessel(q);
+  if (key.length < 2) return { ok: true, boats: [] };
+  const mine = {};
+  readTable('Memberships').filter(m => m.userId === user.id && m.status === 'active').forEach(m => mine[m.vesselId] = 1);
+  const boats = readTable('Vessels').filter(v => isTrue(v.active) && !v.deletedAt && normVessel(v.name).indexOf(key) !== -1)
+    .map(v => ({ vesselId: v.id, vesselName: v.name, homePort: v.homePort || '', mine: !!mine[v.id],
+                 approvers: vesselReviewers(v.id, user.id).map(u => u.name) }))
+    .filter(b => b.mine || b.approvers.length)
+    .sort((a, b) => (normVessel(a.vesselName) === key ? 0 : 1) - (normVessel(b.vesselName) === key ? 0 : 1) || (a.vesselName < b.vesselName ? -1 : 1))
+    .slice(0, 8);
+  return { ok: true, boats };
+}
+
+/** Links a work order typed for "another boat" to that boat on CJM Marine, so it goes to its Captain in the app. */
+function linkWorkOrder(user, id, vesselId) {
+  const row = myWorkOrder(user, id);
+  if (row.status !== 'open') throw new Error('Take the work order back first');
+  const v = readTable('Vessels').find(x => x.id === vesselId && isTrue(x.active) && !x.deletedAt);
+  if (!v) throw new Error('Boat not found');
+  const caps = vesselReviewers(v.id, user.id);
+  const mine = readTable('Memberships').some(x => x.userId === user.id && x.vesselId === v.id && x.status === 'active');
+  if (!mine && !caps.length) throw new Error(v.name + ' has no Captain or Owner on CJM Marine yet');
+  row.vesselId = v.id; row.boatName = v.name;
+  if (caps.length && (!row.contactEmail || !caps.some(c => c.email === row.contactEmail))) { row.contactName = caps.map(c => c.name).join(', '); row.contactEmail = ''; }
+  row.editedAt = nowIso();
+  update('WorkOrders', row._row, row);
+  const inv = readTable('Invoices').find(i => i.woId === row.id);
+  if (inv) { inv.vesselId = v.id; inv.boatName = v.name; update('Invoices', inv._row, inv); }
+  audit(user.id, 'linkWorkOrder', '', row.number + ' → ' + v.name, v.id);
+  return Object.assign(oneWorkOrder(user, row), { message: row.number + ' is now on ' + v.name + '. It goes to ' + (caps.map(c => c.name).join(', ') || 'its Captain') + ' in the app when you send it.' });
 }
 
 /** Signs off the whole work order and sends it to the Captain or Owner, in the app or by email. */

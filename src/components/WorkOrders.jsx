@@ -38,40 +38,77 @@ function WoRow({ wo, onOpen }) {
 }
 
 function NewWorkOrder({ boats, onClose, onDone }) {
-  const [f, setF] = useState({ where: boats.length ? boats[0].vesselId : 'other', boatName: '', contactName: '', contactEmail: '', title: '', description: '' });
+  const [f, setF] = useState({ boatName: '', contactName: '', contactEmail: '', title: '', description: '' });
+  const [picked, setPicked] = useState(null); // a boat on CJM Marine
+  const [found, setFound] = useState([]);
+  const [listOpen, setListOpen] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
-  const other = f.where === 'other';
+
+  // search CJM Marine boats as the name is typed; my own boats show first
+  useEffect(() => {
+    const q = f.boatName.trim();
+    if (picked || q.length < 2) { setFound([]); return undefined; }
+    let live = true;
+    const t = setTimeout(() => { call('findBoats', { q }).then((r) => live && setFound(r.boats || [])).catch(() => {}); }, 250);
+    return () => { live = false; clearTimeout(t); };
+  }, [f.boatName, picked]);
+  const q = f.boatName.trim().toLowerCase();
+  const mineShown = boats.filter((b) => !q || b.vesselName.toLowerCase().includes(q)).map((b) => ({ ...b, mine: true }));
+  const options = [...mineShown, ...found.filter((b) => !mineShown.some((m) => m.vesselId === b.vesselId))].slice(0, 8);
+
+  const pick = (b) => { setPicked(b); setF({ ...f, boatName: b.vesselName }); setListOpen(false); };
   async function create(e) {
     e.preventDefault();
     setBusy(true); setError('');
     try {
       const r = await call('createWorkOrder', { workOrder: {
-        vesselId: other ? '' : f.where, boatName: f.boatName, contactName: f.contactName, contactEmail: f.contactEmail, title: f.title, description: f.description,
+        vesselId: picked ? picked.vesselId : '', boatName: f.boatName, contactName: picked ? '' : f.contactName,
+        contactEmail: picked ? '' : f.contactEmail, title: f.title, description: f.description,
       } });
       onDone(r);
     } catch (err) { setError(err.message); } finally { setBusy(false); }
   }
+  const approvers = picked && (picked.approvers || []);
   return (
     <Modal title="New work order" onClose={onClose}>
       <form className="form" onSubmit={create}>
-        <label>Boat
-          <select value={f.where} onChange={set('where')}>
-            {boats.map((b) => <option key={b.vesselId} value={b.vesselId}>{b.vesselName}</option>)}
-            <option value="other">Another boat</option>
-          </select>
-        </label>
-        {other && <label>Boat name<input value={f.boatName} onChange={set('boatName')} placeholder="M/Y Blue Horizon" required /></label>}
-        <div className="two">
-          <label><span>Captain or Owner {!other && <span className="opt">(optional)</span>}</span><input value={f.contactName} onChange={set('contactName')} placeholder="Name" /></label>
-          <label><span>Their email {!other && <span className="opt">(optional)</span>}</span><input type="email" value={f.contactEmail} onChange={set('contactEmail')} required={other} placeholder="captain@example.com" /></label>
+        <div className="boat-pick">
+          <label>Boat
+            <input value={f.boatName} required autoComplete="off" placeholder="Start typing the boat name" role="combobox"
+              aria-expanded={listOpen && options.length > 0} aria-controls="boat-options"
+              onFocus={() => setListOpen(true)} onBlur={() => setTimeout(() => setListOpen(false), 150)}
+              onChange={(e) => { setPicked(null); setListOpen(true); setF({ ...f, boatName: e.target.value }); }} />
+          </label>
+          {listOpen && !picked && options.length > 0 && (
+            <ul className="boat-options" id="boat-options" role="listbox">
+              {options.map((b) => (
+                <li key={b.vesselId} role="option" aria-selected="false">
+                  <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => pick(b)}>
+                    <b>{b.vesselName}</b>
+                    <small>{b.mine ? 'Your boat' : 'On CJM Marine'}{b.homePort ? `, ${b.homePort}` : ''}{b.approvers && b.approvers.length ? `. Approved by ${b.approvers.join(', ')}` : ''}</small>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
-        <p className="hint">
-          {other
-            ? 'If the boat is on CJM Marine, the finished work order goes to its Captain in the app. If not, they review it from an email without an account. The invoice goes to this email too.'
-            : 'The finished work order goes to this boat’s Captain or Owner in the Reviews tab.'}
-        </p>
+        {picked ? (
+          <div className="ok boat-picked">
+            <b>{picked.vesselName} is on CJM Marine.</b>{' '}
+            {approvers && approvers.length ? `When you send it, the work order goes to ${approvers.join(', ')} for approval in the app.` : 'When you send it, it goes to the boat’s Captain or Owner in the app.'}{' '}
+            <button type="button" className="link" onClick={() => { setPicked(null); setF({ ...f, boatName: '' }); }}>Change boat</button>
+          </div>
+        ) : (
+          <>
+            <div className="two">
+              <label>Captain or Owner<input value={f.contactName} onChange={set('contactName')} placeholder="Name" /></label>
+              <label>Their email<input type="email" value={f.contactEmail} onChange={set('contactEmail')} required placeholder="captain@example.com" /></label>
+            </div>
+            <p className="hint">Not in the list? The boat is not on CJM Marine yet. Its Captain or Owner reviews the work from an email, no account needed, and the invoice goes to this email.</p>
+          </>
+        )}
         <label>What's the job?<input value={f.title} onChange={set('title')} placeholder="Annual stabilizer service" required /></label>
         <label><span>Notes before you start <span className="opt">(optional)</span></span>
           <textarea rows={2} value={f.description} onChange={set('description')} placeholder="Squawk list from the Chief Engineer, access, dock and slip" />
@@ -275,6 +312,12 @@ function WorkOrderDetail({ wo, business, onBack, onData }) {
       {msg && <div className="ok">{msg}</div>}
       {error && <div className="alert">{error}</div>}
 
+      {wo.match && (
+        <div className="review-note wo-banner">
+          <span><b>{wo.match.vesselName}</b>{wo.match.homePort ? ` (${wo.match.homePort})` : ''} is on CJM Marine. Link this work order so it goes to {wo.match.approvers.join(', ')} for approval in the app?</span>
+          <button className="btn" disabled={busy} onClick={() => run('linkWorkOrder', { id: wo.id, vesselId: wo.match.vesselId })}>Link to {wo.match.vesselName}</button>
+        </div>
+      )}
       {wo.status === 'review' && wo.review === 'pending' && (
         <div className="review-note wo-banner">
           <span>Sent {fmtStamp(wo.signedAt)} to {wo.onPlatform ? `the Captain or Owner of ${wo.boatName} in the app` : wo.contactEmail}. Waiting for their answer.</span>
@@ -308,10 +351,14 @@ function WorkOrderDetail({ wo, business, onBack, onData }) {
               <label>What's the job?<input value={f.title} onChange={(e) => change({ title: e.target.value })} /></label>
               {!wo.onPlatform && <label>Boat<input value={f.boatName} onChange={(e) => change({ boatName: e.target.value })} /></label>}
             </div>
-            <div className="two">
-              <label>Captain or Owner<input value={f.contactName} onChange={(e) => change({ contactName: e.target.value })} /></label>
-              <label>Their email<input type="email" value={f.contactEmail} onChange={(e) => change({ contactEmail: e.target.value })} /></label>
-            </div>
+            {wo.onPlatform ? (
+              <p className="hint">Approved in the app by {(wo.approvers || []).join(', ') || 'the boat\u2019s Captain or Owner'}.</p>
+            ) : (
+              <div className="two">
+                <label>Captain or Owner<input value={f.contactName} onChange={(e) => change({ contactName: e.target.value })} /></label>
+                <label>Their email<input type="email" value={f.contactEmail} onChange={(e) => change({ contactEmail: e.target.value })} /></label>
+              </div>
+            )}
             <label>Notes<textarea rows={2} value={f.description} onChange={(e) => change({ description: e.target.value })} /></label>
           </div>
         )}
