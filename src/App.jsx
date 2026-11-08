@@ -221,7 +221,7 @@ export default function App() {
       {tab === 'profile' && <Profile key={profileSub} user={user} vessel={vessel} onChanged={refresh} startSub={profileSub} jobBadge={s.jobUpdates || 0}
         onJobsSeen={() => setS((v) => ({ ...v, jobUpdates: 0 }))} />}
       {tab === 'directory' && user.canSearch && <Directory catalog={s.catalog} />}
-      {tab === 'admin' && user.isAdmin && <Admin user={user} catalog={s.catalog} onOpenVessel={openVessel} onChanged={refresh} />}
+      {tab === 'admin' && user.isAdmin && <Admin user={user} catalog={s.catalog} onOpenVessel={openVessel} onChanged={refresh} pending={s.pendingRequests || 0} />}
     </>
   );
 

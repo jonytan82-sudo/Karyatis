@@ -1613,9 +1613,17 @@ function adminOverview() {
   return {
     ok: true, vessels,
     emailQuota: (function () { try { return MailApp.getRemainingDailyQuota(); } catch (e) { return null; } })(),
+    contractorWork: (function () {
+      const wos = readTable('WorkOrders'), inv = readTable('Invoices');
+      return { open: wos.filter(w => w.status === 'open').length, review: wos.filter(w => w.status === 'review').length,
+               approved: wos.filter(w => w.status === 'approved').length, invoicesSent: inv.filter(i => i.status === 'sent').length,
+               invoicesPaid: inv.filter(i => i.status === 'paid').length };
+    })(),
     users: users.filter(u => !isDeletedUser(u)).map(u => ({
       id: u.id, name: u.name, email: u.email, active: isTrue(u.active), isAdmin: isTrue(u.isAdmin), consultant: isTrue(u.consultant),
       needsSetup: !u.passwordHash,
+      contractor: String(u.contractor).toUpperCase() === 'TRUE' || (String(u.contractor).toUpperCase() !== 'FALSE' &&
+        ms.some(m => m.userId === u.id && m.status === 'active' && permsOfMember(m).contractor)),
       vessels: ms.filter(m => m.userId === u.id && m.status === 'active').map(m => (vName[m.vesselId] || '?') + ', ' + titleOf(m.position) + ' (' + permsOfMember(m).accessLabel + ')')
     })).sort((a, b) => a.name < b.name ? -1 : 1)
   };

@@ -81,6 +81,8 @@ What it does:
 - Captain: approve it as a new log entry, or pick one of the boat's open tasks to sign off with it (recurring tasks move to the next due date).
 - Invoice: built from the work order at the contractor's rate (My business), with editable hours, rates, parts, charges (travel, mileage, lodging, per diem, shipping), consumables, tax and payment details. Preview and print, email a link (no account needed to open it), mark paid. CJM Marine never takes or holds money.
 - Demo: Coastline Stabilizer Service has three work orders and two invoices; Marco Bellini is crew and contractor.
+- CJM admin page is split into tabs: Vessels, Requests, People, Marine supplies, Backup and system (with contractor work order counts), Business card.
+- Landing page: new Contractors section and a "New" link in the hero.
 
 ## Upgrade to 4.0 (task status, returns and cores)
 Paste Code.gs → save → Manage deployments → pencil → New version → Deploy, then upload this folder to GitHub.

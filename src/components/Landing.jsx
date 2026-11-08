@@ -14,6 +14,15 @@ const ROUTE = [
   ['Returned or core sent', 'Wrong part, damaged, or a core due back by a date. RMA, serial numbers off and on, credit.'],
 ];
 
+// A contractor's job, start to finish: a real sequence.
+const WORK_STEPS = [
+  ['Open a work order on any boat', 'Pick one of your boats, or type the boat name and its Captain’s email. It does not have to be on CJM Marine.'],
+  ['Log the work as you go', 'Each item: what you found, what you did, hours by date, and parts with part and serial numbers off and on.'],
+  ['Sign each item', 'Your name, credential and the time go on every item you finish. A signed item is locked.'],
+  ['The Captain reviews it', 'In the app, where it can sign off one of the boat’s own tasks, or from an email with no account needed. Scored 1 to 10 for your record.'],
+  ['Invoice from the work order', 'Hours, parts, travel, consumables and tax are filled in for you. Print it or email a link. The boat pays you directly.'],
+];
+
 const FEATURES = [
   {
     id: 'program', img: 'lp-starter.jpg', w: 1200, h: 1013,
@@ -64,11 +73,11 @@ const ROLES = [
   },
   {
     icon: 'gauge', title: 'Captains and parts buyers',
-    points: ['Run the program, crew, rotations and orders from one login.', 'Approve parts, record orders with tracking, follow returns and cores.', 'Daily Google Sheets backup of the boat.'],
+    points: ['Run the program, crew, rotations and orders from one login.', 'Approve parts, record orders with tracking, follow returns and cores.', 'Approve contractor work orders onto your own open tasks.', 'Daily Google Sheets backup of the boat.'],
   },
   {
     icon: 'crew', title: 'Crew and contractors',
-    points: ['Report issues and request parts from your phone.', 'Hand over in a few taps when you go off rotation.', 'Build a verified record of the work you do.'],
+    points: ['Report issues and request parts from your phone.', 'Hand over in a few taps when you go off rotation.', 'Work orders and invoices for jobs on any boat.', 'Build a verified record of the work you do.'],
   },
 ];
 
@@ -85,6 +94,7 @@ export default function Landing({ focus }) {
         <nav className="lx-nav" aria-label="Page sections">
           <a href="#features">What it does</a>
           <a href="#parts">Parts</a>
+          <a href="#contractors">Contractors</a>
           <a href="#who">Who it’s for</a>
           <a href="#why">Why CJM</a>
           <a href="#contact">Contact</a>
@@ -99,13 +109,14 @@ export default function Landing({ focus }) {
             <h1>The whole boat in one log.</h1>
             <p className="lx-lede">
               Maintenance, crew, rotations and parts for your yacht, from the bridge to the engine room.
-              Owners see the state of the boat, captains run it, and crew build a record that stays with them.
+              Owners see the state of the boat, captains run it, and crew and contractors build a record that stays with them.
             </p>
             <div className="lx-ctas">
               <a className="lx-btn gold" href="/?request=1">Create a free account</a>
               <a className="lx-btn line" href="/login">Log in</a>
             </div>
             <p className="lx-free">Free to sign up. Captains, owners, crew and contractors are all welcome.</p>
+            <a className="lx-new" href="#contractors"><b>New</b> Work orders and invoices for contractors, on any boat</a>
           </div>
           <div className="lx-hero-art" aria-hidden="true">
             <img className="lx-desk" src="/landing/lp-board-parts.jpg" alt="" width="1400" height="613" />
@@ -152,6 +163,33 @@ export default function Landing({ focus }) {
             Each job suggests the parts it usually needs and adds the make and model when the task names it. Save the exact part once and it comes back every time the job is due.
             {SHOW_AMAZON_DISCLOSURE && <> {AMAZON_DISCLOSURE}</>}
           </p>
+        </div>
+      </section>
+
+      <section className="lx-section lx-work" id="contractors">
+        <div className="lx-work-grid">
+          <div className="lx-work-text">
+            <h2 className="lx-h2">Work orders and invoices for contractors</h2>
+            <p className="lx-work-lede">
+              For technicians who work on more than one boat, and crew who take outside jobs. Open a work order, sign off the work,
+              send it to the Captain and invoice from it, all in one place.
+            </p>
+            <ol className="lx-steps">
+              {WORK_STEPS.map(([t, d]) => <li key={t}><b>{t}</b><span>{d}</span></li>)}
+            </ol>
+            <p className="lx-work-note">
+              Crew can be contractors too: tick the box when you sign up, or switch it on later in your profile.
+              CJM Marine keeps the record and never handles the money.
+            </p>
+            <div className="lx-ctas">
+              <a className="lx-btn gold" href="/?request=1&as=contractor">Join as a contractor</a>
+              <a className="lx-btn line dark" href="/?request=1&as=crew">Join as crew</a>
+            </div>
+          </div>
+          <div className="lx-work-art">
+            <figure className="lx-shot"><img src="/landing/lp-wo-board.jpg" alt="A contractor’s work orders: waiting on parts, with the Captain, approved, and unpaid invoices" width="1300" height="658" loading="lazy" /></figure>
+            <figure className="lx-shot lx-paper"><img src="/landing/lp-wo-invoice.jpg" alt="An invoice built from a stabilizer service work order" width="1012" height="1310" loading="lazy" /></figure>
+          </div>
         </div>
       </section>
 
@@ -220,7 +258,7 @@ export default function Landing({ focus }) {
       <section className="lx-join">
         <div className="lx-join-in">
           <h2>Start free today</h2>
-          <p>Ask for your boat to be set up, or join as crew or a contractor and start your record.</p>
+          <p>Ask for your boat to be set up, or join as crew or a contractor and start your record. Contractors get work orders and invoices from day one.</p>
           <div className="lx-ctas center">
             <a className="lx-btn gold" href="/?request=1&as=owner">Set up my boat</a>
             <a className="lx-btn line" href="/?request=1&as=crew">Join as crew</a>
@@ -257,12 +295,13 @@ export default function Landing({ focus }) {
               Your name, email and password (stored as a salted hash). If you choose to add them: phone, photo, headline, home port,
               operating regions, languages, certifications and experience. For each boat: its details, crew list, rotations, maintenance tasks,
               notes, photos, sign-offs, reviews, and parts requests and orders, including suppliers, tracking numbers, returns and where parts were left aboard.
+              For contractors: business details, rates and payment instructions you enter, work orders, and invoices with the name and email they are billed to.
             </p>
             <h3>Who sees it</h3>
             <p>
               A boat’s data is visible only to that boat’s crew and to CJM Marine administrators. Owners and captains can find crew
               profiles; your phone and email show only if you turn that on. Your public reviews page exists only if you turn it on, and it hides reviewers’ names.
-              A captain who confirms a job by email sees only that job.
+              A captain who confirms a job by email sees only that job. An invoice link shows only that invoice. CJM Marine does not process payments.
             </p>
           </div>
           <div>

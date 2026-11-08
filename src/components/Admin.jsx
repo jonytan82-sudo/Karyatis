@@ -39,8 +39,14 @@ function Consultants({ users, busy, run }) {
   );
 }
 
-export default function Admin({ user, catalog, onOpenVessel, onChanged }) {
+const ADMIN_TABS = [['vessels', 'Vessels'], ['requests', 'Requests'], ['people', 'People'], ['supplies', 'Marine supplies'], ['system', 'Backup and system'], ['card', 'Business card']];
+const TAB_KEY = 'cjm_admin_tab';
+const savedTab = () => { try { const t = sessionStorage.getItem(TAB_KEY); return ADMIN_TABS.some(([k]) => k === t) ? t : 'vessels'; } catch { return 'vessels'; } };
+
+export default function Admin({ user, catalog, onOpenVessel, onChanged, pending = 0 }) {
   const [data, setData] = useState(null);
+  const [tab, setTabState] = useState(savedTab);
+  const setTab = (t) => { setTabState(t); try { sessionStorage.setItem(TAB_KEY, t); } catch { /* private mode */ } };
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
   const [form, setForm] = useState(BLANK);
@@ -85,11 +91,24 @@ export default function Admin({ user, catalog, onOpenVessel, onChanged }) {
   const activeVessels = data.vessels.filter((v) => v.active);
   const users = data.users.filter((u) => !filter || `${u.name} ${u.email} ${u.vessels.join(' ')}`.toLowerCase().includes(filter.toLowerCase()));
 
+  const cw = data.contractorWork || {};
+  const contractors = data.users.filter((u) => u.contractor && u.active).length;
+  const counts = { vessels: activeVessels.length, people: data.users.filter((u) => u.active).length, requests: pending };
+
   return (
     <div className="admin">
+      <nav className="subtabs admin-tabs" aria-label="CJM admin sections">
+        {ADMIN_TABS.map(([k, label]) => (
+          <button key={k} className={tab === k ? 'on' : ''} aria-current={tab === k ? 'page' : undefined} onClick={() => { setTab(k); setMsg(''); setError(''); }}>
+            {label}
+            {k === 'requests' && pending > 0 ? <span className="badge">{pending}</span> : counts[k] != null && k !== 'requests' ? <span className="tab-count">{counts[k]}</span> : null}
+          </button>
+        ))}
+      </nav>
       {msg && <div className="ok">{msg}</div>}
       {error && <div className="alert">{error}</div>}
 
+      {tab === 'vessels' && (
       <section className="group">
         <div className="group-head">
           <h3>Vessels <span className="count">{activeVessels.length}</span></h3>
@@ -163,7 +182,10 @@ export default function Admin({ user, catalog, onOpenVessel, onChanged }) {
           ))}
         </ul>
       </section>
+      )}
 
+      {tab === 'system' && (
+      <>
       <section className="group">
         <div className="group-head">
           <h3>Daily backup</h3>
@@ -185,15 +207,37 @@ export default function Admin({ user, catalog, onOpenVessel, onChanged }) {
           </div>
         )}
       </section>
+      <section className="group">
+        <h3>Contractor work orders</h3>
+        <p className="hint">Across all contractors. CJM Marine only keeps the records; it does not handle any money.</p>
+        <div className="fleet-stats admin-stats">
+          <span><b>{contractors}</b> contractors</span>
+          <span><b>{cw.open || 0}</b> open</span>
+          <span><b>{cw.review || 0}</b> with a Captain</span>
+          <span><b>{cw.approved || 0}</b> approved</span>
+          <span><b>{cw.invoicesSent || 0}</b> invoices unpaid</span>
+          <span><b>{cw.invoicesPaid || 0}</b> paid</span>
+        </div>
+      </section>
+      <section className="group">
+        <h3>System</h3>
+        <p className="hint">Google Script version: {server || 'checking…'}</p>
+        {data.emailQuota != null && <p className="hint">Emails left today: <b className={data.emailQuota < 10 ? 'warn-text' : ''}>{data.emailQuota}</b>{data.emailQuota < 10 && ' (Google’s daily limit; it resets every 24 hours)'}</p>}
+      </section>
+      </>
+      )}
 
+      {tab === 'requests' && (
+      <>
       <YachtRequestsAdmin onChanged={() => { load(); onChanged(); }} />
-
       <Requests vessels={activeVessels.map((v) => ({ id: v.id, name: v.name }))} catalog={catalog} allowOversight allowCommand onChanged={() => { load(); onChanged(); }} />
+      </>
+      )}
 
-      <Consultants users={data.users} busy={busy} run={run} />
+      {tab === 'supplies' && <AdminSupplies />}
 
-      <AdminSupplies />
-
+      {tab === 'people' && (
+      <>
       <section className="group">
         <div className="group-head">
           <h3>People <span className="count">{data.users.length}</span></h3>
@@ -203,7 +247,7 @@ export default function Admin({ user, catalog, onOpenVessel, onChanged }) {
           {users.map((u) => (
             <li key={u.id} className={u.active ? '' : 'inactive'}>
               <span className="crew-who">
-                <span><b>{u.name}</b>{u.isAdmin && <span className="tag">CJM admin</span>}{u.consultant && <span className="tag">Rules consultant</span>}</span>
+                <span><b>{u.name}</b>{u.isAdmin && <span className="tag">CJM admin</span>}{u.consultant && <span className="tag">Rules consultant</span>}{u.contractor && <span className="tag">Contractor</span>}</span>
                 <small>{u.email}{u.needsSetup && ', has not set a password yet'}{!u.active && ', deactivated'}</small>
                 <small>{u.vessels.length ? u.vessels.join('; ') : 'No vessel'}</small>
               </span>
@@ -236,9 +280,11 @@ export default function Admin({ user, catalog, onOpenVessel, onChanged }) {
           ))}
         </ul>
       </section>
-      <AdminCard user={user} />
+      <Consultants users={data.users} busy={busy} run={run} />
+      </>
+      )}
 
-      <p className="hint">Google Script version: {server || 'checking…'}{data && data.emailQuota != null && <> · Emails left today: <b className={data.emailQuota < 10 ? 'warn-text' : ''}>{data.emailQuota}</b>{data.emailQuota < 10 && ' (Google’s daily limit; it resets every 24 hours)'}</>}</p>
+      {tab === 'card' && <AdminCard user={user} />}
     </div>
   );
 }
