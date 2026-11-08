@@ -690,7 +690,10 @@ a.btn { text-decoration: none; display: inline-block; color: inherit; }
 .m-who .switcher { background: rgba(255,255,255,0.08); color: #fff; border: 1px solid rgba(230,196,122,0.55); border-radius: 8px; padding: 0.45rem 0.55rem; max-width: 48vw; }
 .m-who .switcher option { color: var(--ink); }
 .m-notices:empty { display: none; }
-.m-notices .alert, .m-notices .ok { color: var(--ink); }
+.m-notices .alert, .m-notices .ok, .m-notices .invite, .m-notices .invite p, .m-notices .invite b { color: var(--ink); }
+.m-notices .invite .btn:not(.primary) { color: var(--ink); background: var(--paper); border-color: var(--line); }
+.m-notices .invite-actions { width: 100%; }
+.m-notices .invite-actions .btn { flex: 1; }
 .m-notices > * { margin-bottom: 0; }
 
 .m-menu { display: flex; flex-direction: column; border-top: 1px solid rgba(255,255,255,0.12); }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { call, getToken, getVessel, setToken, setVessel } from './api.js';
 import Login from './components/Login.jsx';
 import Board from './components/Board.jsx';
@@ -108,6 +108,30 @@ export default function App() {
       .finally(() => setChecking(false));
   }, [load]);
 
+  // Phones keep the app open for days. Check again when the person comes back to it, and every few minutes while it is
+  // on screen, so invitations, approvals and answers show up without closing the app. Not while a form is open.
+  const busyRef = useRef(false);
+  busyRef.current = !!(editing || openId || submitting || starter || details);
+  useEffect(() => {
+    let last = Date.now();
+    const check = () => {
+      if (document.visibilityState !== 'visible' || !getToken() || busyRef.current) return;
+      if (Date.now() - last < 30000) return;
+      last = Date.now();
+      refresh();
+    };
+    document.addEventListener('visibilitychange', check);
+    window.addEventListener('focus', check);
+    window.addEventListener('pageshow', check);
+    const timer = setInterval(() => { last = 0; check(); }, 180000);
+    return () => {
+      document.removeEventListener('visibilitychange', check);
+      window.removeEventListener('focus', check);
+      window.removeEventListener('pageshow', check);
+      clearInterval(timer);
+    };
+  }, [refresh]);
+
   useEffect(() => {
     const onLogout = () => { setS(null); setVessel(''); };
     window.addEventListener('cjm-logout', onLogout);
@@ -167,7 +191,7 @@ export default function App() {
   if (user.canSearch) tabs.push(['directory', 'Find crew']);
   if (user.isAdmin) tabs.push(['admin', 'CJM admin']);
   const onVesselTab = vessel && VESSEL_TABS.includes(tab);
-  const badgeFor = (key) => (key === 'crew' ? s.vesselRequests : key === 'reviews' ? s.pendingTaskReviews : key === 'admin' ? s.pendingRequests : key === 'profile' ? s.jobUpdates : key === 'supplies' ? s.partsPending : 0) || 0;
+  const badgeFor = (key) => (key === 'crew' ? s.vesselRequests : key === 'reviews' ? s.pendingTaskReviews : key === 'admin' ? s.pendingRequests : key === 'profile' ? s.jobUpdates : key === 'supplies' ? s.partsPending : key === 'workorders' ? (s.teamInvites || []).length : 0) || 0;
   const openJobs = () => { setProfileSub('jobs'); openTab('profile'); };
   const newTaskLabel = perms && (perms.createRoutine ? 'New task' : perms.contractor ? 'Record finding' : 'Report issue');
   const canSubmit = vessel && s.canSubmitWork;

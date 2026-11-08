@@ -40,7 +40,7 @@ export default function Invites({ invites, teamInvites = [], onDone }) {
             You will see the work orders you are given and sign your own work. Your profile and work record stay yours.
           </p>
           <span className="invite-actions">
-            <button className="btn primary" disabled={!!busy} onClick={() => respondTeam(inv, true)}>Join {inv.company}</button>
+            <button className="btn primary" disabled={!!busy} onClick={() => respondTeam(inv, true)}>Join team</button>
             <button className="btn" disabled={!!busy} onClick={() => respondTeam(inv, false)}>Decline</button>
           </span>
         </div>
