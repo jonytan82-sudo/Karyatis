@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { call, getCompany, setCompany } from '../api.js';
+import { useLiveReload } from '../live.js';
 import { SYSTEMS, fmtDate, fmtStamp, todayISO } from '../util.js';
 import Modal from './Modal.jsx';
 import { InvoicePanel } from './Invoice.jsx';
+import PartFinder from './PartFinder.jsx';
 import {
   ITEM_STATUS, PART_STATUS, STATE_LABEL, cleanNum, itemHours, money, newItem, newPart, num, partLine, partsWaiting, tmpId, woHours, woState,
 } from '../workorders.js';
@@ -146,7 +148,7 @@ function NewWorkOrder({ boats, leads, me, onClose, onDone }) {
 }
 
 /** One item on the work order: what was found, what was done, labor, parts, and the signature. */
-function ItemCard({ it, idx, count, ro, credential, onChange, onMove, onRemove, onSign, onUnsign, busy, team, canRun, canSign, canUnsign, names }) {
+function ItemCard({ it, idx, count, ro, credential, onChange, onMove, onRemove, onSign, onUnsign, busy, team, canRun, canSign, canUnsign, names, supplies }) {
   const [labor, setLabor] = useState({ date: todayISO(), hours: '', note: '' });
   const [cred, setCred] = useState(credential || '');
   const [open, setOpen] = useState(!it.title || !it.sign);
@@ -235,8 +237,13 @@ function ItemCard({ it, idx, count, ro, credential, onChange, onMove, onRemove, 
 
           <div className="wo-sub">
             <b>Parts</b>
+            {!locked && supplies && supplies.searchUrl && (
+              <PartFinder supplies={supplies} compact task={{ title: it.title, description: [it.system, it.discrepancy].filter(Boolean).join('. ') }}
+                onAdd={(x) => set('parts', [...(it.parts || []), { ...newPart(), desc: x.name, qty: x.qty || '1', pnOn: x.partNumber, url: x.url }])} />
+            )}
             {(it.parts || []).map((p) => (locked ? (
-              <p key={p.id} className="wo-part-ro">{p.desc}{p.desc && ' '}<span className="muted">{partLine(p)}{num(p.qty) !== 1 ? `, qty ${num(p.qty)}` : ''}</span></p>
+              <p key={p.id} className="wo-part-ro">{p.desc}{p.desc && ' '}<span className="muted">{partLine(p)}{num(p.qty) !== 1 ? `, qty ${num(p.qty)}` : ''}</span>
+                {p.url && <> <a href={p.url} target="_blank" rel="noopener noreferrer">Product page</a></>}</p>
             ) : (
               <div key={p.id} className="wo-part">
                 <div className="wo-part-top">
@@ -248,6 +255,7 @@ function ItemCard({ it, idx, count, ro, credential, onChange, onMove, onRemove, 
                   </select>
                   <button type="button" className="close" aria-label="Remove part" onClick={() => set('parts', it.parts.filter((x) => x.id !== p.id))}>×</button>
                 </div>
+                {p.url && <a className="wo-part-link" href={p.url} target="_blank" rel="noopener noreferrer">Product page</a>}
                 <div className="wo-part-sn">
                   <span className="muted">Off</span>
                   <input aria-label="Part number off" value={p.pnOff} disabled={p.naOff} onChange={(e) => setPart(p.id, 'pnOff', e.target.value)} placeholder="Part no. off" />
@@ -260,7 +268,7 @@ function ItemCard({ it, idx, count, ro, credential, onChange, onMove, onRemove, 
                 </div>
               </div>
             )))}
-            {!locked && <button type="button" className="link" onClick={() => set('parts', [...(it.parts || []), newPart()])}>Add a part</button>}
+            {!locked && <button type="button" className="link" onClick={() => set('parts', [...(it.parts || []), newPart()])}>{supplies && supplies.searchUrl ? 'Add a part by hand' : 'Add a part'}</button>}
             {!(it.parts || []).length && locked && <p className="hint">No parts.</p>}
           </div>
 
@@ -295,7 +303,7 @@ function ItemCard({ it, idx, count, ro, credential, onChange, onMove, onRemove, 
 const fromWo = (wo) => ({ title: wo.title, description: wo.description || '', contactName: wo.contactName || '', contactEmail: wo.contactEmail || '',
   boatName: wo.boatName || '', items: wo.items || [], poNumber: wo.poNumber || '', leadId: wo.leadId || '' });
 
-function WorkOrderDetail({ wo, business, onBack, onData, me, team, can, role }) {
+function WorkOrderDetail({ wo, business, onBack, onData, me, team, can, role, supplies }) {
   const [f, setF] = useState(() => fromWo(wo));
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -436,7 +444,7 @@ function WorkOrderDetail({ wo, business, onBack, onData, me, team, can, role }) 
               ro={ro || (!canRun && it.assignedTo !== me)} team={team} names={names} canRun={canRun}
               canSign={it.assignedTo ? it.assignedTo === me : canRun}
               canUnsign={!!it.sign && (it.sign.userId ? it.sign.userId === me || senior : canRun)}
-              onChange={(x) => setItem(i, x)} onMove={(by) => move(i, by)} onRemove={() => setRemoving(i)}
+              supplies={supplies} onChange={(x) => setItem(i, x)} onMove={(by) => move(i, by)} onRemove={() => setRemoving(i)}
               onSign={(c) => sign(i, c)} onUnsign={() => unsign(i)} />
           ))}
         </ol>
@@ -667,8 +675,15 @@ export default function WorkOrders() {
   const [focus, setFocus] = useState('');
 
   const take = (r) => { if (r && r.company && r.company.id !== getCompany()) setCompany(r.company.id); setData(r); };
-  const load = () => call('workOrders').then(take).catch((e) => setError(e.message));
+  // A reload that started before a save finished must not replace the newer copy the save sent back.
+  const seq = useRef(0);
+  const load = () => { const n = ++seq.current; return call('workOrders').then((r) => { if (n === seq.current) take(r); }).catch((e) => setError(e.message)); };
+  const fromSave = (r) => { seq.current++; take(r); };
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const openRef = useRef(null);
+  openRef.current = openId;
+  // other people's changes: fetch again, but not while a work order is open (it may have unsaved typing)
+  useLiveReload(() => { if (!openRef.current) load(); });
 
   const list = data ? data.workOrders : [];
   const byState = useMemo(() => {
@@ -695,7 +710,7 @@ export default function WorkOrders() {
   const isTeam = team.length > 1;
   const open = openId && list.find((w) => w.id === openId);
   if (open) {
-    return <WorkOrderDetail wo={open} business={data.business} me={data.me} team={team} can={can} role={role} onBack={() => setOpenId(null)} onData={take} />;
+    return <WorkOrderDetail wo={open} business={data.business} supplies={data.supplies} me={data.me} team={team} can={can} role={role} onBack={() => { setOpenId(null); load(); }} onData={fromSave} />;
   }
   const switchTo = (id) => { setCompany(id); setOpenId(null); setFocus(''); setSub('orders'); setData(null); load(); };
   const live = list.filter((w) => w.status !== 'approved');
@@ -718,8 +733,8 @@ export default function WorkOrders() {
         {can.business && <button className={sub === 'business' ? 'on' : ''} onClick={() => setSub('business')}>My business</button>}
       </nav>
 
-      {sub === 'business' && can.business && <MyBusiness business={data.business} currencies={data.currencies} onData={take} />}
-      {sub === 'team' && <Team data={data} onData={take} />}
+      {sub === 'business' && can.business && <MyBusiness business={data.business} currencies={data.currencies} onData={fromSave} />}
+      {sub === 'team' && <Team data={data} onData={fromSave} />}
 
       {sub === 'orders' && (
         <>
@@ -783,7 +798,7 @@ export default function WorkOrders() {
       {adding && (
         <NewWorkOrder boats={data.boats} me={role === 'lead' ? '' : data.me} leads={can.assignLead && isTeam ? team.filter((m) => m.status === 'active' && m.role !== 'tech') : null}
           onClose={() => setAdding(false)}
-          onDone={(r) => { setAdding(false); take(r); setOpenId(r.workOrder.id); }} />
+          onDone={(r) => { setAdding(false); fromSave(r); setOpenId(r.workOrder.id); }} />
       )}
     </div>
   );

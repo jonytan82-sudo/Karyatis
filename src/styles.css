@@ -1549,3 +1549,22 @@ button.gauge-cell.focus span { color: #fff; text-decoration: underline; }
 .part-finder input, .team-actions select, .wo-company select, .wo-assign select { border: 1px solid var(--line); border-radius: 6px; padding: 0.55rem 0.7rem; background: var(--paper); }
 .part-finder input { width: 100%; }
 .pf-search input { width: auto; }
+
+/* ── 4.2: refresh button ── */
+.refresh-btn { display: inline-grid; place-items: center; width: 2.4rem; height: 2.4rem; border-radius: 50%; cursor: pointer; flex: none;
+  background: transparent; border: 1px solid rgba(230, 196, 122, 0.55); color: var(--gold-hi); padding: 0; }
+.refresh-btn svg { width: 1.15rem; height: 1.15rem; }
+.refresh-btn:focus-visible { outline: 2px solid #e6c47a; outline-offset: 2px; }
+.refresh-btn.spinning svg { animation: cjm-spin 0.8s linear infinite; }
+@keyframes cjm-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .refresh-btn.spinning svg { animation: none; opacity: 0.5; } }
+.who-refresh { width: 2rem; height: 2rem; }
+.m-bar-refresh { margin-left: auto; }
+
+/* ── 4.2: approvals waiting ── */
+.approval-notice { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap;
+  background: var(--paper); color: var(--ink); border: 1px solid var(--line); border-left: 4px solid var(--brass); border-radius: 6px;
+  padding: 0.7rem 0.85rem; margin-bottom: 0.75rem; }
+.approval-notice span { flex: 1 1 14rem; min-width: 0; }
+.m-notices .approval-notice .btn { flex: 1 1 auto; }
+.wo-part-link { font-size: 0.9rem; }

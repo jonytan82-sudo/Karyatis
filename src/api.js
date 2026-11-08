@@ -19,6 +19,13 @@ let currentCompany = store.get('cjm_company') || '';
 export const getCompany = () => currentCompany;
 export const setCompany = (id) => { currentCompany = id || ''; store.set('cjm_company', currentCompany); };
 
+// Actions that only read. Any other action that succeeds changed something, so the app and the open screen fetch again.
+// (On the live Google Script a save takes a few seconds; a screen that loaded meanwhile would otherwise keep the old copy.)
+const READS = new Set(['bootstrap', 'version', 'catalog', 'calendar', 'getTask', 'getInvoice', 'getWorkReview', 'getSetup', 'getMyProfile',
+  'getProfile', 'listRequests', 'listRules', 'ruleHistory', 'listTaskReviews', 'listVesselRequests', 'myWork', 'rotationView', 'workOrders',
+  'adminOverview', 'adminSupplies', 'supplyOverview', 'publicReviews', 'searchCrew', 'findBoats', 'login', 'verifyLoginCode',
+  'resendLoginCode', 'requestReset', 'confirmReset', 'completeSetup', 'requestAccount', 'logout', 'emailMyRecord']);
+
 export async function call(action, data = {}) {
   if (!API_URL) throw new Error('VITE_API_URL is not set. Add it in Netlify environment variables.');
   let res;
@@ -39,6 +46,9 @@ export async function call(action, data = {}) {
       window.dispatchEvent(new Event('cjm-logout'));
     }
     throw new Error(json.error || 'Request failed');
+  }
+  if (!READS.has(action)) {
+    try { window.dispatchEvent(new CustomEvent('cjm-changed', { detail: { action, at: Date.now() } })); } catch { /* old browsers */ }
   }
   return json;
 }

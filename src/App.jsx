@@ -59,6 +59,7 @@ export default function App() {
   const [profileSub, setProfileSub] = useState('');
   const [starter, setStarter] = useState(false);
   const [details, setDetails] = useState(false);
+  const [spinning, setSpinning] = useState(false);
   const phone = usePhone();
   const [home, setHome] = useState(true); // phone: showing the menu screen
 
@@ -95,7 +96,9 @@ export default function App() {
     }
   }, []);
 
+  const lastRefresh = useRef(0);
   const refresh = useCallback(async () => {
+    lastRefresh.current = Date.now();
     try { load(await call('bootstrap', { vesselId: getVessel() }), true); }
     catch (e) { setError(e.message); }
   }, [load]);
@@ -119,7 +122,16 @@ export default function App() {
       if (Date.now() - last < 30000) return;
       last = Date.now();
       refresh();
+      window.dispatchEvent(new Event('cjm-refresh'));
     };
+    // something was saved: fetch the app's data again, unless a refresh already started after the save finished
+    let changeTimer;
+    const changed = (e) => {
+      const at = (e.detail && e.detail.at) || Date.now();
+      clearTimeout(changeTimer);
+      changeTimer = setTimeout(() => { if (getToken() && lastRefresh.current < at) refresh(); }, 600);
+    };
+    window.addEventListener('cjm-changed', changed);
     document.addEventListener('visibilitychange', check);
     window.addEventListener('focus', check);
     window.addEventListener('pageshow', check);
@@ -129,6 +141,8 @@ export default function App() {
       window.removeEventListener('focus', check);
       window.removeEventListener('pageshow', check);
       clearInterval(timer);
+      window.removeEventListener('cjm-changed', changed);
+      clearTimeout(changeTimer);
     };
   }, [refresh]);
 
@@ -155,6 +169,12 @@ export default function App() {
       load(r);
     } catch (e) { setError(e.message); }
     finally { setBusy(false); }
+  }
+
+  // a notice opens Reviews, switching to that boat first when needed
+  async function openReviews(vesselId) {
+    if (!vessel || vessel.id !== vesselId) await openVessel(vesselId);
+    setTab('reviews'); setHome(false);
   }
 
   async function logout() {
@@ -198,6 +218,18 @@ export default function App() {
   const submitLabel = perms && perms.createRoutine ? 'Suggest or log work' : 'Log work or suggest';
   const tabLabel = (tabs.find(([k]) => k === tab) || [])[1] || '';
 
+  const refreshNow = async () => {
+    setSpinning(true);
+    window.dispatchEvent(new Event('cjm-refresh'));
+    await refresh();
+    setTimeout(() => setSpinning(false), 400);
+  };
+  const refreshBtn = (cls) => (
+    <button className={`${cls} refresh-btn${spinning ? ' spinning' : ''}`} onClick={refreshNow} disabled={spinning} aria-label="Refresh" title="Get the latest">
+      <Icon name="refresh" />
+    </button>
+  );
+
   const switcher = vesselOptions.length > 1 && (
     <select className="switcher" aria-label="Switch vessel" value={vessel ? vessel.id : ''} disabled={busy}
       onChange={(e) => e.target.value && openVessel(e.target.value)}>
@@ -216,6 +248,19 @@ export default function App() {
       )}
       <Invites invites={s.invites || []} teamInvites={s.teamInvites || []} onDone={(r) => load(r)} />
       {error && <div className="alert">{error} <button className="link" onClick={refresh}>Retry</button></div>}
+      {(s.approvalsWaiting || []).filter((a) => !(tab === 'reviews' && !home && vessel && vessel.id === a.vesselId)).map((a) => {
+        const parts = [
+          a.workOrders ? `${a.workOrders} contractor work order${a.workOrders === 1 ? '' : 's'}${a.from.length ? ` from ${a.from.join(', ')}` : ''}` : '',
+          a.jobs ? `${a.jobs} crew job${a.jobs === 1 ? '' : 's'}` : '',
+          a.reviews ? `${a.reviews} task review${a.reviews === 1 ? '' : 's'}` : '',
+        ].filter(Boolean);
+        return (
+          <div key={a.vesselId} className="approval-notice">
+            <span><b>{a.vesselName}:</b> {parts.join(', ')} waiting for your approval.</span>
+            <button className="btn primary" disabled={busy} onClick={() => openReviews(a.vesselId)}>Review now</button>
+          </div>
+        );
+      })}
       {s.jobUpdates > 0 && tab !== 'profile' && (
         <div className="ok job-news">
           {s.jobUpdates === 1 ? 'A captain answered one of your jobs.' : `Captains answered ${s.jobUpdates} of your jobs.`}{' '}
@@ -300,6 +345,7 @@ export default function App() {
               <small>{user.name}{vessel && position ? `, ${position}` : ''}{vessel && perms && perms.contractor ? ' (contractor)' : ''}</small>
             </div>
             {switcher}
+            {refreshBtn('m-who-refresh')}
           </div>
           <div className="m-notices">{notices}</div>
           <nav className="m-menu" aria-label="Sections">
@@ -339,7 +385,7 @@ export default function App() {
             <b>{tabLabel}</b>
             <small>{vessel && VESSEL_TABS.includes(tab) ? vessel.name : 'CJM Marine'}</small>
           </div>
-          <Icon name={ICONS[tab]} className="m-bar-ico" />
+          {refreshBtn('m-bar-refresh')}
         </header>
         <main className="main">
           {notices}
@@ -369,6 +415,7 @@ export default function App() {
         <div className="who">
           {switcher}
           <span>{user.name}{vessel && position ? `, ${position}` : ''}{vessel && perms && perms.contractor ? ' (contractor)' : ''}</span>
+          {refreshBtn('who-refresh')}
           <button className="link light" onClick={logout}>Log out</button>
         </div>
       </header>

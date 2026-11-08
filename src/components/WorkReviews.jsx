@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { call } from '../api.js';
+import { useLiveReload } from '../live.js';
 import { fmtDate, fmtStamp, isoDate } from '../util.js';
 import { AttachmentList } from './Attachments.jsx';
 import { money } from '../workorders.js';
@@ -124,7 +125,9 @@ export default function WorkReviews({ vessel, onChanged }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => { call('listTaskReviews').then(setData).catch((e) => setError(e.message)); }, [vessel.id]);
+  const loadReviews = () => call('listTaskReviews').then(setData).catch((e) => setError(e.message));
+  useEffect(() => { loadReviews(); }, [vessel.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useLiveReload(loadReviews);
 
   async function run(fn) {
     setBusy(true); setError('');

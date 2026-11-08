@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { call } from '../api.js';
+import { useLiveReload } from '../live.js';
 import { fmtStamp } from '../util.js';
 import SetupLink from './SetupLink.jsx';
 import { RoleFields, titleInfo } from './Roles.jsx';
@@ -20,6 +21,7 @@ export default function Requests({ vesselId, vessels, catalog, allowOversight, a
   const load = () => call('listRequests', { vesselId: vesselId || '' })
     .then((r) => { setList(r.requests); setError(''); }).catch((e) => setError(e.message));
   useEffect(() => { load(); }, [vesselId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useLiveReload(load);
 
   const norm = (s) => String(s || '').toLowerCase().replace(/\b(m\/?y|s\/?y|mv|sy|my)\b/g, '').replace(/[^a-z0-9]/g, '');
   const matchVessel = (r) => {

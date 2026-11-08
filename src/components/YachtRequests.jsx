@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { call } from '../api.js';
+import { useLiveReload } from '../live.js';
 import { fmtStamp } from '../util.js';
 
 export const VESSEL_TYPES = ['Motor yacht', 'Sailing yacht', 'Catamaran', 'Expedition yacht', 'Sport fisher', 'Other'];
@@ -16,6 +17,7 @@ export function RequestYacht({ onChanged }) {
   const [busy, setBusy] = useState(false);
   const load = useCallback(() => call('listVesselRequests').then((r) => setList(r.requests)).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); }, [load]);
+  useLiveReload(load);
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   const send = async (e) => {
@@ -90,6 +92,7 @@ export function YachtRequestsAdmin({ onChanged }) {
   const [busy, setBusy] = useState(false);
   const load = useCallback(() => call('listVesselRequests').then((r) => setList(r.requests)).catch((e) => setError(e.message)), []);
   useEffect(() => { load(); }, [load]);
+  useLiveReload(load);
 
   const run = async (fn, done) => {
     setBusy(true); setError(''); setMsg('');

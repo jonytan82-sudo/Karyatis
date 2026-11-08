@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { call } from '../api.js';
+import { useLiveReload } from '../live.js';
 import SetupLink from './SetupLink.jsx';
 import AdminSupplies from './AdminSupplies.jsx';
 import Requests from './Requests.jsx';
@@ -60,6 +61,7 @@ export default function Admin({ user, catalog, onOpenVessel, onChanged, pending 
   const [uploading, setUploading] = useState(false);
 
   const load = () => call('adminOverview').then((r) => { setData(r); setError(''); }).catch((e) => setError(e.message));
+  useLiveReload(load);
   useEffect(() => {
     load();
     call('version').then((r) => setServer(r.version)).catch(() => setServer('out of date: deploy a new version in Apps Script'));

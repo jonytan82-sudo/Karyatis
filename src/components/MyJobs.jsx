@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { call } from '../api.js';
+import { useLiveReload } from '../live.js';
 import { fmtDate, fmtStamp } from '../util.js';
 import { AttachmentList } from './Attachments.jsx';
 import SubmitWork from './SubmitWork.jsx';
@@ -15,6 +16,7 @@ export default function MyJobs({ onSeen }) {
 
   const load = () => call('myWork').then((r) => { setList(r.submissions); if (r.submissions.some((x) => x.isNew) && onSeen) onSeen(); }).catch((e) => setError(e.message));
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useLiveReload(load);
 
   async function cancel(id) {
     setError('');

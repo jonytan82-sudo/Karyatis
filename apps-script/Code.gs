@@ -760,6 +760,7 @@ function bootstrap(user, vesselId) {
     canRequestVessel: canRequestVessel(user),
     jobUpdates: jobUpdatesFor(user.id),
     teamInvites: teamInvitesFor(user),
+    approvalsWaiting: approvalsWaiting(user),
     catalog: roleCatalog()
   };
 
@@ -3524,6 +3525,22 @@ function cancelWork(user, id) {
   return { ok: true, submissions: mySubmissions(user) };
 }
 
+/** Everything waiting for this person's approval, on every boat where they approve work (not only the boat on screen). */
+function approvalsWaiting(user) {
+  const vs = {};
+  readTable('Vessels').filter(v => isTrue(v.active) && !v.deletedAt).forEach(v => vs[v.id] = v.name);
+  const names = crewNames();
+  return readTable('Memberships').filter(m => m.userId === user.id && m.status === 'active' && vs[m.vesselId] && permsOfMember(m).hires)
+    .map(m => {
+      const work = pendingWorkFor(m.vesselId, user.id);
+      const wo = work.filter(x => x.kind === 'workorder');
+      return { vesselId: m.vesselId, vesselName: vs[m.vesselId], workOrders: wo.length, jobs: work.length - wo.length,
+               reviews: pendingReviewsFor(m.vesselId, user.id).length,
+               from: wo.map(x => names[x.userId] || '').filter(Boolean).filter((n, i, a) => a.indexOf(n) === i).slice(0, 3) };
+    })
+    .filter(x => x.workOrders + x.jobs + x.reviews > 0);
+}
+
 function pendingWorkFor(vesselId, reviewerId) {
   return readTable('WorkSubmissions').filter(x => x.vesselId === vesselId && x.status === 'pending' && x.userId !== reviewerId);
 }
@@ -4965,7 +4982,7 @@ function cleanParts(list) {
   return (Array.isArray(list) ? list : []).slice(0, 40).map(x => ({
     id: woId(x.id, 'P'), desc: clip(x.desc, 150),
     pnOff: clip(x.pnOff, 60), snOff: clip(x.snOff, 60), pnOn: clip(x.pnOn, 60), snOn: clip(x.snOn, 60),
-    naOff: !!x.naOff, naOn: !!x.naOn,
+    naOff: !!x.naOff, naOn: !!x.naOn, url: /^https:\/\/\S+$/.test(String(x.url || '').trim()) ? clip(String(x.url).trim(), 500) : '',
     qty: woAmount(x.qty, 10000) || '1', price: woAmount(x.price, 1000000),
     status: WO_PART_STATUS.indexOf(x.status) !== -1 ? x.status : 'needed'
   })).filter(x => x.desc || x.pnOn || x.pnOff);
@@ -5100,7 +5117,7 @@ function workOrdersView(t) {
   const boats = readTable('Memberships').filter(m => m.userId === t.user.id && m.status === 'active' && vessels[m.vesselId])
     .map(m => ({ vesselId: m.vesselId, vesselName: vessels[m.vesselId], approvers: approversFor(m.vesselId, t).map(u => u.name) }));
   const list = all.filter(w => canSeeWo(t, w)).sort((a, b) => a.editedAt < b.editedAt ? 1 : -1).map(w => woView(w, subs, invs, vessels, t, team));
-  return { ok: true, business: businessView(t.owner, atLeast(t, 'supervisor')), workOrders: list, boats, currencies: WO_CURRENCIES,
+  return { ok: true, business: businessView(t.owner, atLeast(t, 'supervisor')), workOrders: list, boats, currencies: WO_CURRENCIES, supplies: suppliesForApp(),
            company: { id: t.ownerId, name: t.companyName, role: t.role, roleLabel: t.roleLabel, own: t.ownerId === t.user.id },
            companies: t.companies, team: teamView(t), teamInvites: teamInvitesFor(t.user), me: t.user.id,
            can: { business: t.role === 'owner', team: t.role === 'owner', invoice: atLeast(t, 'supervisor'), create: atLeast(t, 'lead'),
@@ -5299,10 +5316,11 @@ function submitWorkOrder(t, id, o) {
     (inv && inv.status !== 'draft' ? '<p>Invoice ' + esc(inv.number) + ' was sent separately.</p>' : '');
   let message;
   if (vessel) {
-    sendMail(reviewers.map(r => r.email).join(','), 'Approve work order: ' + who + ', ' + row.title,
+    const mailed = sendMail(reviewers.map(r => r.email).join(','), 'Approve work order: ' + who + ', ' + row.title,
       '<p><b>' + esc(who) + '</b> signed off a work order on ' + esc(vessel.name) + ' and asks for your approval.</p>' + details +
       '<p>Nothing is added to the vessel\'s log until you approve it. You can add it as a new entry or sign off one of your open tasks with it. Open the <b>Reviews</b> tab.</p>' + appLink());
-    message = row.number + ' sent to the Captain or Owner of ' + vessel.name + ' for approval.';
+    message = row.number + ' sent to ' + reviewers.map(r => r.name).join(', ') + ' (' + vessel.name + ') for approval. It is waiting in their Reviews tab' +
+      (mailed ? ' and they were emailed.' : '. The email could not be sent, so let them know.');
   } else {
     const link = siteUrl() + '/?w=' + sub.token;
     sendMail(row.contactEmail, who + ' asks you to confirm work on ' + row.boatName,

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { call } from '../api.js';
+import { useLiveReload } from '../live.js';
 import { SYSTEMS, fmtDate, fmtStamp } from '../util.js';
 import { searchLink, shopLink } from '../supplies.js';
 import CartButton from './CartButton.jsx';
@@ -44,6 +45,7 @@ export function SupplyOrders({ view, vessel, supplies, onOpenTask, isBuyer, onCh
 
   const load = useCallback(() => call('supplyOverview', { days, from, to }).then(setD).catch((e) => setError(e.message)), [days, from, to]);
   useEffect(() => { load(); }, [load, vessel.id]);
+  useLiveReload(load);
 
   async function act(action, data) {
     setBusy(true); setError('');

@@ -13,6 +13,7 @@ const P = {
   rotation: <><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8" /><path d="M4 4v4h4" /><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16" /><path d="M20 20v-4h-4" /></>,
   cart: <><path d="M3 4h2.5l2.2 10.5h10.6l2-7.5H6.4" /><circle cx="9.5" cy="19" r="1.4" /><circle cx="17" cy="19" r="1.4" /></>,
   plus: <path d="M12 5v14M5 12h14" />,
+  refresh: <><path d="M20 11a8 8 0 0 0-14.6-4.5M4 13a8 8 0 0 0 14.6 4.5" /><path d="M5 3v4h4M19 21v-4h-4" /></>,
   back: <path d="M15 5l-7 7 7 7" />,
   chevron: <path d="M9 5l7 7-7 7" />,
   logout: <><path d="M15 4h3.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H15" /><path d="M10 8l-4 4 4 4M6 12h10" /></>,

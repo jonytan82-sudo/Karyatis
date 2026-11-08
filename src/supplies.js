@@ -130,7 +130,10 @@ export function suggestionsFor(task, maps) {
   SUGGEST.forEach(([re, items, part]) => { if (re.test(text)) items.forEach((i) => add(i, part)); });
   // nothing matched: a search from the title, except for jobs with nothing to buy (drills, surveys, checks of records or radios)
   if (!out.length && !NOTHING_TO_BUY.test(text)) {
-    const words = String(task.title || '').replace(/\(.*?\)/g, '').replace(/[^a-z0-9\s-]/gi, ' ')
+    const words = String(task.title || '').replace(/\(.*?\)/g, '')
+      .replace(/\b(while|when|before|after|during|if|until|so|because|as needed|per|at the)\b.*$/i, '') // "Check fin seals while the boat is in"
+      .replace(/[^a-z0-9\s-]/gi, ' ')
+      .replace(/\b(boat|yacht|vessel|is|are|be|it|its|new|old|again)\b/gi, ' ')
       .replace(/\b(check|checks|inspect|inspection|test|service|clean|replace|change|monthly|weekly|annual|and|the|of|for|with|on|in|to|a|all|broken|function)\b/gi, ' ')
       .replace(/\s+/g, ' ').trim();
     if (words) out.push({ term: `marine ${words}`.toLowerCase(), fromTitle: true });
