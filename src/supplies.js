@@ -155,6 +155,32 @@ export function asinOf(url) {
   return m ? m[2].toUpperCase() : '';
 }
 
+/**
+ * What a pasted product link tells us, without opening the page: the Amazon item code and a readable name from the address.
+ * Amazon addresses usually carry the product name ("/Racor-R12T-Fuel-Filter/dp/B000…"). Short links (amzn.to, a.co) carry
+ * neither, and manufacturer part numbers and quantities are never in a link, so the person checks the name and fills those in.
+ */
+export function readProductLink(url) {
+  let u;
+  try { u = new URL(String(url || '').trim()); } catch { return null; }
+  if (u.protocol !== 'https:') return null;
+  const host = u.hostname.replace(/^www\./, '').toLowerCase();
+  const short = /^(amzn\.to|a\.co|amzn\.eu|amzn\.asia)$/.test(host);
+  const segs = u.pathname.split('/').filter(Boolean).map((x) => { try { return decodeURIComponent(x); } catch { return x; } });
+  let slug = '';
+  if (/(^|\.)amazon\./.test(host)) {
+    const i = segs.findIndex((x) => x === 'dp' || x === 'gp');
+    if (i > 0) slug = segs[i - 1];
+  } else if (!short) {
+    slug = [...segs].reverse().find((x) => /[a-z]{3}/i.test(x) && /[-_+ ]/.test(x)) || '';
+  }
+  let name = slug.replace(/\.(html?|aspx|php|jsp)$/i, '').replace(/--.*$/, '').replace(/[-_+]+/g, ' ')
+    .replace(/\b(p|prod|sku|item|ip)?\d{6,}\b/gi, '').replace(/\s+/g, ' ').trim();
+  if (name.length > 90) name = name.slice(0, 90).replace(/\s+\S*$/, '');
+  name = name.charAt(0).toUpperCase() + name.slice(1);
+  return { asin: asinOf(u.toString().replace(/^https:\/\/amazon\./, 'https://www.amazon.')), name, host, short, amazon: /(^|\.)amazon\.|^amzn\.|^a\.co$/.test(host) };
+}
+
 /** Cart links for lines [{ url, qty }], 20 items per link. Only items with an Amazon product link go in. */
 export function cartLinks(lines, supplies) {
   const host = (() => { try { return new URL(supplies.searchUrl.replace('{term}', 'x')).host; } catch { return 'www.amazon.com'; } })();

@@ -90,7 +90,7 @@ export default function App() {
     setError('');
     if (!keepTab) {
       const hasVessels = (r.memberships || []).length > 0 || (r.vessels || []).length > 0;
-      setTab(r.vessel ? 'board' : hasVessels ? 'vessels' : r.user && r.user.consultant ? 'rules' : r.user && r.user.contractor ? 'workorders' : 'profile');
+      setTab(r.vessel ? 'board' : hasVessels ? 'vessels' : r.user && r.user.consultant ? 'rules' : r.user && (r.user.contractor || r.user.onTeam) ? 'workorders' : 'profile');
       setHome(true);
     }
   }, []);
@@ -160,7 +160,7 @@ export default function App() {
   if (vessel && !perms.contractor) tabs.push(['rotation', 'Rotation']);
   if (vessel && s.canReviewWork) tabs.push(['reviews', 'Reviews']);
   if (vesselOptions.length > 1 || (!vessel && vesselOptions.length) || s.canRequestVessel) tabs.push(['vessels', 'Vessels']);
-  if (user.contractor) tabs.push(['workorders', 'Work orders']);
+  if (user.contractor || user.onTeam) tabs.push(['workorders', 'Work orders']);
   if (vessel || vesselOptions.length) tabs.push(['supplies', 'Marine supplies']);
   if (user.consultant) tabs.push(['rules', 'Rules review']);
   tabs.push(['profile', 'My profile']);
@@ -190,7 +190,7 @@ export default function App() {
           will not work yet. {user.isAdmin ? 'In Apps Script: paste the latest Code.gs, save, then Deploy → Manage deployments → pencil → New version → Deploy.' : 'Please tell the CJM admin.'}
         </div>
       )}
-      <Invites invites={s.invites || []} onDone={(r) => load(r)} />
+      <Invites invites={s.invites || []} teamInvites={s.teamInvites || []} onDone={(r) => load(r)} />
       {error && <div className="alert">{error} <button className="link" onClick={refresh}>Retry</button></div>}
       {s.jobUpdates > 0 && tab !== 'profile' && (
         <div className="ok job-news">
@@ -210,7 +210,7 @@ export default function App() {
       {tab === 'tasks' && vessel && <TaskList tasks={s.tasks || []} onOpen={setOpenId} onStarter={perms.createRoutine ? () => setStarter(true) : null}
         onDetails={s.canEditBoat ? () => setDetails(true) : null} />}
       {tab === 'rules' && user.consultant && <RulesReview user={user} />}
-      {tab === 'workorders' && user.contractor && <WorkOrders />}
+      {tab === 'workorders' && (user.contractor || user.onTeam) && <WorkOrders />}
       {tab === 'supplies' && <SuppliesPage key={vessel ? vessel.id : 'none'} supplies={s.supplies} vessel={vessel} isBuyer={!!s.isBuyer} pending={s.partsPending || 0} onOpenTask={setOpenId} onChanged={refresh} />}
       {tab === 'rotation' && vessel && !perms.contractor && <Rotation user={user} onOpenTask={setOpenId} />}
       {tab === 'reviews' && vessel && s.canReviewWork && <WorkReviews vessel={vessel} onChanged={refresh} />}
@@ -254,6 +254,7 @@ export default function App() {
           crew={crew.filter((c) => c.status === 'active')}
           perms={perms}
           rules={s.rules || []}
+          supplies={s.supplies}
           onClose={() => setEditing(null)}
           onSaved={(t, partsMsg) => { setEditing(null); refresh(); setOpenId(t.id); if (partsMsg) setSentMsg(partsMsg); }}
         />

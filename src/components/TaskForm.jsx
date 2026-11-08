@@ -4,13 +4,15 @@ import { call } from '../api.js';
 import { SYSTEMS, todayISO } from '../util.js';
 import { JOBS, everyLabel, jobAllowed, jobDescription, withRule } from '../jobLibrary.js';
 import BasisChip from './BasisChip.jsx';
+import PartFinder from './PartFinder.jsx';
+import { readProductLink } from '../supplies.js';
 
 const BLANK = {
   title: '', type: 'Routine', system: '', description: '', dueDate: '', dueTime: '',
   recurring: false, intervalValue: '', intervalUnit: 'months', assignedTo: '', note: '',
 };
 
-export default function TaskForm({ initial, crew, perms, rules, onClose, onSaved }) {
+export default function TaskForm({ initial, crew, perms, rules, supplies, onClose, onSaved }) {
   const editing = !!initial;
   const canSchedule = perms.createRoutine;
   const [f, setF] = useState(() => (initial
@@ -24,7 +26,13 @@ export default function TaskForm({ initial, crew, perms, rules, onClose, onSaved
   const [basis, setBasis] = useState('');
   const [parts, setParts] = useState([]);
   const blankPart = () => ({ name: '', partNumber: '', qty: '', url: '', saveToTask: f.type !== 'Issue' && !!f.recurring });
-  const setPart = (i, k, v) => setParts(parts.map((p, j) => (j === i ? { ...p, [k]: v } : p)));
+  const setPart = (i, k, v) => setParts(parts.map((p, j) => {
+    if (j !== i) return p;
+    const next = { ...p, [k]: v };
+    // a pasted link fills in the item name when it is still empty
+    if (k === 'url' && !p.name.trim()) { const info = readProductLink(v); if (info && info.name) next.name = info.name; }
+    return next;
+  }));
   const commonJobs = JOBS.map((j) => withRule(j, rules)).filter((j) => j && (!f.system || j.system === f.system) && jobAllowed(perms, j.system));
   const jobGroups = commonJobs.reduce((g, j) => { (g[j.system] = g[j.system] || []).push(j); return g; }, {});
   function pickJob(id) {
@@ -168,9 +176,12 @@ export default function TaskForm({ initial, crew, perms, rules, onClose, onSaved
         {!editing && (
           <fieldset className="recur parts-needed">
             <legend>Parts needed <span className="opt">(optional)</span></legend>
-            {parts.length === 0 && <p className="hint">Need parts for this {isIssue ? 'issue' : 'job'}? Add them and they go to the parts buyer or Captain to approve and order.</p>}
+            <p className="hint">Need parts for this {isIssue ? 'issue' : 'job'}? Find them here. They go to the parts buyer or Captain to approve and order when you create the task.</p>
+            <PartFinder supplies={supplies} task={{ title: f.title, description: f.description }}
+              onAdd={(p) => setParts([...parts, { ...blankPart(), ...p }])} />
             {parts.map((p, i) => (
               <div key={i} className="part-row">
+                <b className="part-row-head">Part {i + 1}{p.url && (readProductLink(p.url) || {}).host ? <span className="muted"> from {readProductLink(p.url).host}</span> : ''}</b>
                 <div className="two">
                   <label>Part<input value={p.name} onChange={(e) => setPart(i, 'name', e.target.value)} placeholder="Hydraulic hose 1/2 in x 2 m" /></label>
                   <div className="two">
@@ -185,7 +196,7 @@ export default function TaskForm({ initial, crew, perms, rules, onClose, onSaved
                 </div>
               </div>
             ))}
-            <button type="button" className="link" onClick={() => setParts([...parts, blankPart()])}>{parts.length ? 'Add another part' : 'Add a part'}</button>
+            <button type="button" className="link" onClick={() => setParts([...parts, blankPart()])}>{supplies && supplies.searchUrl ? 'Add a part by hand' : parts.length ? 'Add another part' : 'Add a part'}</button>
           </fieldset>
         )}
 

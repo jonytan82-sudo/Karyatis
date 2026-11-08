@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { call } from '../api.js';
-import { CATEGORY_SEARCH, SUPPLY_CATEGORY_LABELS, VERIFY_NOTE, searchLink, shopLink, suggestionsFor } from '../supplies.js';
+import { CATEGORY_SEARCH, SUPPLY_CATEGORY_LABELS, VERIFY_NOTE, readProductLink, searchLink, shopLink } from '../supplies.js';
+import PartFinder from './PartFinder.jsx';
 import { fmtDate } from '../util.js';
 import { SupplyOrders } from './SupplyOrders.jsx';
 import CartButton from './CartButton.jsx';
@@ -24,17 +25,16 @@ export function PurchaseSupplies({ task, supplies, saved: initialSaved, canAdd, 
   const [saved, setSaved] = useState(initialSaved || []);
   const [adding, setAdding] = useState(false);
   const [f, setF] = useState({ name: '', url: '', partNumber: '', qty: '', note: '', need: 'every' });
-  const [q, setQ] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   useEffect(() => setSaved(initialSaved || []), [initialSaved]);
   if (!supplies || !supplies.searchUrl) return null;
-  const sug = suggestionsFor(task, supplies.maps);
+  const blank = { name: '', url: '', partNumber: '', qty: '', note: '', need: 'every' };
 
   async function save(e) {
     e.preventDefault();
     setBusy(true); setError('');
-    try { const r = await call('addTaskSupply', { taskId: task.id, item: f }); setSaved(r.supplyItems); setAdding(false); setF({ name: '', url: '', partNumber: '', qty: '', note: '', need: 'every' }); }
+    try { const r = await call('addTaskSupply', { taskId: task.id, item: f }); setSaved(r.supplyItems); setAdding(false); setF(blank); setMsg('Saved to this task. Nothing was sent for approval.'); }
     catch (err) { setError(err.message); } finally { setBusy(false); }
   }
   async function act(action, data) {
@@ -114,32 +114,25 @@ export function PurchaseSupplies({ task, supplies, saved: initialSaved, canAdd, 
               {msg && <div className="ok">{msg}</div>}
             </>
           )}
-          {sug.items.length > 0 && (
+          {!adding && (
             <>
-              <b>{saved.length ? 'Other suggestions' : 'Suggested for this job'}{sug.equipment && <small className="muted"> for {sug.equipment}</small>}</b>
-              <div className="supply-sugs">
-                {sug.items.map((s) => (
-                  <a key={s.term} className="supply-sug" href={searchLink(supplies, s.term)} target="_blank" rel="noopener noreferrer">{s.term}</a>
-                ))}
-              </div>
+              {saved.length > 0 && <b>Need something else?</b>}
+              <PartFinder supplies={supplies} task={task} canSave={canAdd} compact addLabel="Next"
+                onAdd={(p) => { setF({ ...blank, ...p }); setAdding(true); setMsg(''); }} />
             </>
           )}
-          {!sug.items.length && !saved.length && <b>Need something for this job?</b>}
-          {sug.note && <p className="hint">{sug.note}</p>}
-          {sug.verify && <p className="supply-verify">{VERIFY_NOTE}</p>}
-          <form className="supply-search" onSubmit={(e) => { e.preventDefault(); if (q.trim()) window.open(searchLink(supplies, q.trim()), '_blank', 'noopener'); }}>
-            <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search Amazon for something else" aria-label="Search Amazon" />
-            <button className="btn" disabled={!q.trim()}>Search</button>
-          </form>
-          {canAdd && !adding && <button className="link" onClick={() => setAdding(true)}>Found the right part? Save it to this task</button>}
           {adding && (
             <form className="form supply-add" onSubmit={save}>
-              <p className="hint">Saved items stay on this task and show first every time it comes due.</p>
+              <p className="hint">{isBuyer ? 'Saved parts stay on this task and show first every time it comes due.' : 'The part goes to the parts buyer or Captain to approve and order. It also stays on this task for next time.'}</p>
+              <label><span>Product link <span className="opt">(Amazon or any supplier)</span></span>
+                <input type="url" value={f.url} placeholder="https://www.amazon.com/dp/…" onChange={(e) => {
+                  const v = e.target.value; const info = readProductLink(v);
+                  setF({ ...f, url: v, name: f.name || (info && info.name) || '' });
+                }} /></label>
               <div className="two">
                 <label>Item<input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} required placeholder="Oil filter" /></label>
                 <label><span>Part number <span className="opt">(optional)</span></span><input value={f.partNumber} onChange={(e) => setF({ ...f, partNumber: e.target.value })} placeholder="1R-0739" /></label>
               </div>
-              <label><span>Product link <span className="opt">(paste from Amazon or any supplier)</span></span><input type="url" value={f.url} onChange={(e) => setF({ ...f, url: e.target.value })} placeholder="https://www.amazon.com/dp/…" /></label>
               <div className="need-choice">
                 <label className="check"><input type="radio" name="need" checked={f.need === 'every'} onChange={() => setF({ ...f, need: 'every' })} /> <span><b>Needed every time</b> this task is done (goes on the Needed soon list)</span></label>
                 <label className="check"><input type="radio" name="need" checked={f.need === 'asNeeded'} onChange={() => setF({ ...f, need: 'asNeeded' })} /> <span><b>Only as needed</b></span></label>
@@ -149,14 +142,15 @@ export function PurchaseSupplies({ task, supplies, saved: initialSaved, canAdd, 
                 <label><span>Note <span className="opt">(optional)</span></span><input value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} placeholder="2 per engine" /></label>
               </div>
               <div className="actions left">
-                <button className="btn primary" disabled={busy}>Save item</button>
-                {!isBuyer && <button type="button" className="btn" disabled={busy || !f.name.trim()} onClick={async () => {
+                <button type="button" className="btn primary" disabled={busy || !f.name.trim()} onClick={async () => {
                   if (await act('requestParts', { taskId: task.id, items: [{ ...f, saveToTask: true }] })) {
-                    setAdding(false); setF({ name: '', url: '', partNumber: '', qty: '', note: '', need: 'every' }); setMsg('Saved and requested.');
+                    setAdding(false); setF(blank);
+                    setMsg(isBuyer ? 'Saved and added to the order list.' : 'Saved and sent for approval. The parts buyer or Captain will approve and order it.');
                     const r = await call('getTask', { id: task.id }); setSaved(r.supplyItems);
                   }
-                }}>Save and request</button>}
-                <button type="button" className="btn" onClick={() => setAdding(false)}>Cancel</button>
+                }}>{isBuyer ? 'Save and add to order list' : 'Save and send for approval'}</button>
+                <button className="btn" disabled={busy}>Save to task only</button>
+                <button type="button" className="btn" onClick={() => { setAdding(false); setF(blank); }}>Cancel</button>
               </div>
             </form>
           )}

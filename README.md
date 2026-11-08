@@ -68,6 +68,24 @@ React + Vite on Netlify, with Google Sheets + Apps Script as the backend.
 5. Web addresses typed or pasted in notes, descriptions, resolutions and the activity log are clickable.
 6. CJM admin tab should show `Google Script version: 2.5 (photos and files on notes)`.
 
+## Upgrade to 4.2 (contractor teams, PO numbers, find the part)
+
+Deploy both parts: paste the new `apps-script/Code.gs`, save, then Deploy > Manage deployments > edit > New version > Deploy. Then upload the site.
+A new tab, **TeamMembers**, is created by itself, and WorkOrders gets three new columns (createdBy, leadId, poNumber). Nothing to run by hand.
+
+- **Contractor teams.** A contractor starts as a business of one. In Work orders > Team the owner adds people by email as Supervisor, Lead or Technician.
+  Someone already on CJM Marine accepts the invitation at the top of the page; someone new gets an email to set a password.
+  - Owner: business details, rates, payment details and the team.
+  - Supervisor: every work order, assigns leads and work, makes and sends invoices.
+  - Lead: opens and runs work orders, gives items to technicians, sends them to the Captain.
+  - Technician: sees only work orders with items given to them, signs their own items, can write up new items. No rates or invoices.
+  - When the Captain scores a work order, each person who signed items gets the score on their own record.
+  - Someone on several teams (or with their own business too) picks who they are working for at the top of Work orders.
+- **PO number** on the work order. It goes on the invoice and in the emails to the Captain. Changing it updates a draft invoice.
+- **Find the part** on New task and in a task's Purchase supplies: search Amazon (through the CJM link when the tag is on), paste the product link back,
+  and the item name is filled in from the link. Short links (amzn.to) have no name in them. Part numbers and quantities are typed.
+  A part saved on a task now goes for approval by default ("Save and send for approval"); "Save to task only" is still there.
+
 ## Upgrade to 4.1 (contractor work orders and invoices)
 
 1. Apps Script: paste the new `Code.gs`, save, then Deploy → Manage deployments → pencil → New version → Deploy.

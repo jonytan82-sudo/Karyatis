@@ -14,6 +14,11 @@ let currentVessel = store.get(VESSEL_KEY) || '';
 export const getVessel = () => currentVessel;
 export const setVessel = (id) => { currentVessel = id || ''; store.set(VESSEL_KEY, currentVessel); };
 
+// The contractor business the Work orders tab is working for (your own, or a team you joined)
+let currentCompany = store.get('cjm_company') || '';
+export const getCompany = () => currentCompany;
+export const setCompany = (id) => { currentCompany = id || ''; store.set('cjm_company', currentCompany); };
+
 export async function call(action, data = {}) {
   if (!API_URL) throw new Error('VITE_API_URL is not set. Add it in Netlify environment variables.');
   let res;
@@ -21,7 +26,7 @@ export async function call(action, data = {}) {
     res = await fetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action, token: getToken(), vesselId: currentVessel, origin: window.location.origin, ...data }),
+      body: JSON.stringify({ action, token: getToken(), vesselId: currentVessel, company: currentCompany, origin: window.location.origin, ...data }),
     });
   } catch {
     throw new Error('No connection. Check your internet and try again.');

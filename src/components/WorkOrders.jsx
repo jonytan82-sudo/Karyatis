@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { call } from '../api.js';
+import { call, getCompany, setCompany } from '../api.js';
 import { SYSTEMS, fmtDate, fmtStamp, todayISO } from '../util.js';
 import Modal from './Modal.jsx';
 import { InvoicePanel } from './Invoice.jsx';
@@ -12,11 +12,19 @@ const BLOCKS = [
   ['ready', 'Ready to send', 'issue'], ['review', 'With the Captain', 'review'],
 ];
 
+export const ROLE_HELP = {
+  owner: 'Business details, rates, payment details and the team, plus everything below.',
+  supervisor: 'Every work order. Assigns leads and work, makes and sends invoices.',
+  lead: 'Opens and runs work orders, gives items to technicians, sends work orders to the Captain.',
+  tech: 'Works the items given to them, writes up new findings and signs their own work.',
+};
+const ROLE_LABEL = { owner: 'Owner', supervisor: 'Supervisor', lead: 'Lead', tech: 'Technician' };
+
 function StateChip({ state }) {
   return <span className={`wo-chip ws-${state}`}>{STATE_LABEL[state]}</span>;
 }
 
-function WoRow({ wo, onOpen }) {
+function WoRow({ wo, onOpen, team }) {
   const s = woState(wo);
   const last = (wo.notes || []).length ? wo.notes[wo.notes.length - 1] : null;
   const hours = woHours(wo), waiting = partsWaiting(wo), n = (wo.items || []).length;
@@ -25,7 +33,10 @@ function WoRow({ wo, onOpen }) {
     <button type="button" className={`wo-row ws-${s}`} onClick={() => onOpen(wo.id)}>
       <span className="wo-row-main">
         <b>{wo.title}</b>
-        <small>{wo.number}, {wo.boatName}{wo.onPlatform ? '' : ' (not on CJM Marine)'}</small>
+        <small>{wo.number}, {wo.boatName}{wo.onPlatform ? '' : ' (not on CJM Marine)'}{wo.poNumber ? `, PO ${wo.poNumber}` : ''}</small>
+        {team && (wo.leadName || wo.mine > 0) && (
+          <small className="muted">{wo.leadName ? `Lead ${wo.leadName}` : ''}{wo.leadName && wo.mine ? '. ' : ''}{wo.mine ? `${wo.mine} item${wo.mine === 1 ? '' : 's'} given to you` : ''}</small>
+        )}
         <small className="muted">
           {n} item{n === 1 ? '' : 's'}{hours ? `, ${Math.round(hours * 10) / 10} hr` : ''}{waiting ? `, ${waiting} part${waiting === 1 ? '' : 's'} on order` : ''}
           {inv ? `. ${inv.number} ${money(inv.total, inv.currency)} ${inv.status === 'paid' ? 'paid' : inv.status === 'sent' ? 'sent' : 'draft'}` : ''}
@@ -37,8 +48,8 @@ function WoRow({ wo, onOpen }) {
   );
 }
 
-function NewWorkOrder({ boats, onClose, onDone }) {
-  const [f, setF] = useState({ boatName: '', contactName: '', contactEmail: '', title: '', description: '' });
+function NewWorkOrder({ boats, leads, me, onClose, onDone }) {
+  const [f, setF] = useState({ boatName: '', contactName: '', contactEmail: '', title: '', description: '', poNumber: '', leadId: me || '' });
   const [picked, setPicked] = useState(null); // a boat on CJM Marine
   const [found, setFound] = useState([]);
   const [listOpen, setListOpen] = useState(false);
@@ -65,7 +76,7 @@ function NewWorkOrder({ boats, onClose, onDone }) {
     try {
       const r = await call('createWorkOrder', { workOrder: {
         vesselId: picked ? picked.vesselId : '', boatName: f.boatName, contactName: picked ? '' : f.contactName,
-        contactEmail: picked ? '' : f.contactEmail, title: f.title, description: f.description,
+        contactEmail: picked ? '' : f.contactEmail, title: f.title, description: f.description, poNumber: f.poNumber, leadId: f.leadId,
       } });
       onDone(r);
     } catch (err) { setError(err.message); } finally { setBusy(false); }
@@ -110,6 +121,17 @@ function NewWorkOrder({ boats, onClose, onDone }) {
           </>
         )}
         <label>What's the job?<input value={f.title} onChange={set('title')} placeholder="Annual stabilizer service" required /></label>
+        <div className="two">
+          <label><span>PO number <span className="opt">(if the boat gave you one)</span></span><input value={f.poNumber} onChange={set('poNumber')} maxLength={40} /></label>
+          {leads && leads.length > 1 && (
+            <label>Lead
+              <select value={f.leadId} onChange={set('leadId')}>
+                <option value="">No lead yet</option>
+                {leads.map((m) => <option key={m.userId} value={m.userId}>{m.name} ({m.roleLabel})</option>)}
+              </select>
+            </label>
+          )}
+        </div>
         <label><span>Notes before you start <span className="opt">(optional)</span></span>
           <textarea rows={2} value={f.description} onChange={set('description')} placeholder="Squawk list from the Chief Engineer, access, dock and slip" />
         </label>
@@ -124,7 +146,7 @@ function NewWorkOrder({ boats, onClose, onDone }) {
 }
 
 /** One item on the work order: what was found, what was done, labor, parts, and the signature. */
-function ItemCard({ it, idx, count, ro, credential, onChange, onMove, onRemove, onSign, onUnsign, busy }) {
+function ItemCard({ it, idx, count, ro, credential, onChange, onMove, onRemove, onSign, onUnsign, busy, team, canRun, canSign, canUnsign, names }) {
   const [labor, setLabor] = useState({ date: todayISO(), hours: '', note: '' });
   const [cred, setCred] = useState(credential || '');
   const [open, setOpen] = useState(!it.title || !it.sign);
@@ -145,13 +167,24 @@ function ItemCard({ it, idx, count, ro, credential, onChange, onMove, onRemove, 
         <button type="button" className="wo-item-toggle" onClick={() => setOpen(!open)} aria-expanded={open}>
           <span className="wo-no">{idx + 1}</span>
           <span className="wo-item-title"><b>{it.title || 'New item'}</b>
-            <small>{[it.system, hours ? `${Math.round(hours * 10) / 10} hr` : '', (it.parts || []).length ? `${it.parts.length} part${it.parts.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ')}</small>
+            <small>{[it.system, hours ? `${Math.round(hours * 10) / 10} hr` : '', (it.parts || []).length ? `${it.parts.length} part${it.parts.length === 1 ? '' : 's'}` : '',
+              team && team.length > 1 ? (it.assignedTo ? (names[it.assignedTo] || it.assignedName || 'Someone who left') : 'Not given to anyone') : ''].filter(Boolean).join(', ')}</small>
           </span>
         </button>
         {it.sign ? <span className="wo-chip ws-approved">Signed</span> : <span className={`wo-chip is-${it.status}`}>{(ITEM_STATUS.find((s) => s[0] === it.status) || [])[1]}</span>}
       </div>
       {open && (
         <div className="wo-item-body">
+          {team && team.length > 1 && (canRun && !ro && !it.sign ? (
+            <label className="wo-assign">Given to
+              <select value={it.assignedTo || ''} onChange={(e) => set('assignedTo', e.target.value)}>
+                <option value="">Not given to anyone yet</option>
+                {team.filter((m) => m.status === 'active').map((m) => <option key={m.userId} value={m.userId}>{m.name} ({m.roleLabel})</option>)}
+              </select>
+            </label>
+          ) : (
+            <p className="hint wo-assign-ro">{it.assignedTo ? `Given to ${names[it.assignedTo] || it.assignedName || 'someone who left the team'}.` : 'Not given to anyone yet.'}</p>
+          ))}
           {locked ? (
             <>
               {it.discrepancy && <p className="pre"><span className="muted">Found: </span>{it.discrepancy}</p>}
@@ -183,7 +216,7 @@ function ItemCard({ it, idx, count, ro, credential, onChange, onMove, onRemove, 
             {(it.labor || []).length > 0 && (
               <ul className="wo-labor">
                 {it.labor.map((l) => (
-                  <li key={l.id}><span>{fmtDate(l.date)}</span><span>{num(l.hours)} hr</span><span className="muted">{l.note}</span>
+                  <li key={l.id}><span>{fmtDate(l.date)}</span><span>{num(l.hours)} hr</span><span className="muted">{[team && team.length > 1 && l.by ? names[l.by] : '', l.note].filter(Boolean).join(': ')}</span>
                     {!locked && <button type="button" className="close" aria-label="Remove labor line" onClick={() => set('labor', it.labor.filter((x) => x.id !== l.id))}>×</button>}
                   </li>
                 ))}
@@ -234,17 +267,19 @@ function ItemCard({ it, idx, count, ro, credential, onChange, onMove, onRemove, 
           {it.sign ? (
             <div className="wo-signed">
               <span>Signed by <b>{it.sign.name}</b>{it.sign.credential ? `, ${it.sign.credential}` : ''}, {fmtStamp(it.sign.at)}</span>
-              {!ro && <button type="button" className="link" disabled={busy} onClick={onUnsign}>Take back the signature</button>}
+              {!ro && canUnsign && <button type="button" className="link" disabled={busy} onClick={onUnsign}>Take back the signature</button>}
             </div>
-          ) : !ro && (
+          ) : !ro && canSign ? (
             <div className="wo-sign">
               <input aria-label="Your credential" value={cred} onChange={(e) => setCred(e.target.value)} placeholder="Your credential (optional), e.g. ABYC Diesel" />
               <button type="button" className="btn primary" disabled={busy || !it.title.trim() || !it.corrective.trim()} onClick={() => onSign(cred)}>Sign this item</button>
               {!it.corrective.trim() && <span className="hint">Write the work done first.</span>}
             </div>
+          ) : !ro && !it.sign && (
+            <p className="hint">{it.assignedTo ? `${names[it.assignedTo] || 'The person it is given to'} signs this item.` : 'The lead gives this item to someone, who then signs it.'}</p>
           )}
 
-          {!locked && (
+          {!locked && canRun && (
             <div className="wo-item-tools">
               <button type="button" className="link" disabled={idx === 0} onClick={() => onMove(-1)}>Move up</button>
               <button type="button" className="link" disabled={idx === count - 1} onClick={() => onMove(1)}>Move down</button>
@@ -258,9 +293,9 @@ function ItemCard({ it, idx, count, ro, credential, onChange, onMove, onRemove, 
 }
 
 const fromWo = (wo) => ({ title: wo.title, description: wo.description || '', contactName: wo.contactName || '', contactEmail: wo.contactEmail || '',
-  boatName: wo.boatName || '', items: wo.items || [] });
+  boatName: wo.boatName || '', items: wo.items || [], poNumber: wo.poNumber || '', leadId: wo.leadId || '' });
 
-function WorkOrderDetail({ wo, business, onBack, onData }) {
+function WorkOrderDetail({ wo, business, onBack, onData, me, team, can, role }) {
   const [f, setF] = useState(() => fromWo(wo));
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -274,7 +309,13 @@ function WorkOrderDetail({ wo, business, onBack, onData }) {
 
   const state = woState({ ...wo, items: f.items });
   const ro = wo.status !== 'open';
+  const canRun = !!wo.canRun;
   const allSigned = f.items.length > 0 && f.items.every((i) => i.sign);
+  const names = {};
+  (team || []).forEach((m) => { names[m.userId] = m.name; });
+  const isTeam = (team || []).length > 1;
+  const senior = role === 'owner' || role === 'supervisor';
+  const mineOpen = f.items.filter((i) => i.assignedTo === me && !i.sign).length;
   const change = (patch) => { setF({ ...f, ...patch }); setDirty(true); setMsg(''); };
   const setItem = (i, it) => change({ items: f.items.map((x, j) => (j === i ? it : x)) });
 
@@ -287,8 +328,11 @@ function WorkOrderDetail({ wo, business, onBack, onData }) {
       return r;
     } catch (e) { setError(e.message); return null; } finally { setBusy(false); }
   }
-  const payload = (items, extra) => ({ id: wo.id, workOrder: { title: f.title, description: f.description, contactName: f.contactName, contactEmail: f.contactEmail,
-    ...(wo.onPlatform ? {} : { boatName: f.boatName }), items: items || f.items, editedAt: wo.editedAt, ...extra } });
+  const payload = (items, extra) => ({ id: wo.id, workOrder: canRun
+    ? { title: f.title, description: f.description, contactName: f.contactName, contactEmail: f.contactEmail, poNumber: f.poNumber,
+        ...(wo.onPlatform ? {} : { boatName: f.boatName }), ...(can && can.assignLead ? { leadId: f.leadId } : {}),
+        items: items || f.items, editedAt: wo.editedAt, ...extra }
+    : { items: items || f.items, ...extra } });
   const save = () => run('saveWorkOrder', payload(), 'Saved.');
   const sign = (i, credential) => run('saveWorkOrder', payload(f.items.map((x, j) => (j === i ? { ...x, sign: { credential } } : x))), `Item ${i + 1} signed.`);
   const unsign = (i) => run('saveWorkOrder', payload(f.items.map((x, j) => (j === i ? { ...x, sign: null } : x))), `Signature taken back on item ${i + 1}.`);
@@ -305,13 +349,18 @@ function WorkOrderDetail({ wo, business, onBack, onData }) {
       <div className="wo-detail-head">
         <div>
           <h2>{wo.number}: {wo.title}</h2>
-          <p className="hint">{wo.boatName}{wo.onPlatform ? ', on CJM Marine' : ', not on CJM Marine'}. Opened {fmtStamp(wo.openedAt)}.</p>
+          <p className="hint">{wo.boatName}{wo.onPlatform ? ', on CJM Marine' : ', not on CJM Marine'}. Opened {fmtStamp(wo.openedAt)}{wo.createdByName && isTeam ? ` by ${wo.createdByName}` : ''}.{wo.poNumber ? ` PO ${wo.poNumber}.` : ''}{isTeam ? (wo.leadName ? ` Lead ${wo.leadName}.` : ' No lead yet.') : ''}</p>
         </div>
         <StateChip state={state} />
       </div>
       {msg && <div className="ok">{msg}</div>}
       {error && <div className="alert">{error}</div>}
 
+      {!canRun && wo.status === 'open' && (
+        <div className="review-note wo-banner">
+          <span>{mineOpen ? `${mineOpen} item${mineOpen === 1 ? ' is' : 's are'} given to you. Log your hours and parts, write the work done, then sign ${mineOpen === 1 ? 'it' : 'each one'}.` : 'Your items are signed.'} You can also add an item for anything new you find. {wo.leadName || 'The lead'} sends the work order to the Captain.</span>
+        </div>
+      )}
       {wo.match && (
         <div className="review-note wo-banner">
           <span><b>{wo.match.vesselName}</b>{wo.match.homePort ? ` (${wo.match.homePort})` : ''} is on CJM Marine. Link this work order so it goes to {wo.match.approvers.join(', ')} for approval in the app?</span>
@@ -321,7 +370,7 @@ function WorkOrderDetail({ wo, business, onBack, onData }) {
       {wo.status === 'review' && wo.review === 'pending' && (
         <div className="review-note wo-banner">
           <span>Sent {fmtStamp(wo.signedAt)} to {wo.onPlatform ? `the Captain or Owner of ${wo.boatName} in the app` : wo.contactEmail}. Waiting for their answer.</span>
-          <button className="btn" disabled={busy} onClick={() => run('reopenWorkOrder', { id: wo.id }, 'Taken back. You can change it and send it again.')}>Take it back to edit</button>
+          {canRun && <button className="btn" disabled={busy} onClick={() => run('reopenWorkOrder', { id: wo.id }, 'Taken back. You can change it and send it again.')}>Take it back to edit</button>}
         </div>
       )}
       {wo.status === 'review' && wo.review !== 'pending' && (
@@ -329,21 +378,21 @@ function WorkOrderDetail({ wo, business, onBack, onData }) {
           <span>
             {wo.review === 'declined' ? `${wo.reviewedBy || 'The Captain'} did not approve it${wo.decisionNote ? `: “${wo.decisionNote}”` : '.'}` : wo.review === 'expired' ? 'The review link expired before it was answered.' : 'You withdrew the review request.'}
           </span>
-          <button className="btn" disabled={busy} onClick={() => run('reopenWorkOrder', { id: wo.id }, 'Reopened. Fix it and send it again.')}>Reopen to fix and resend</button>
+          {canRun && <button className="btn" disabled={busy} onClick={() => run('reopenWorkOrder', { id: wo.id }, 'Reopened. Fix it and send it again.')}>Reopen to fix and resend</button>}
         </div>
       )}
       {wo.status === 'approved' && (
         <div className="ok wo-banner">
-          Approved by {wo.reviewedBy || 'the Captain'} {fmtStamp(wo.reviewedAt)}{wo.score ? `, ${wo.score}/10` : ''}{wo.reviewText ? `: “${wo.reviewText}”` : '.'} It is part of your work record.
+          Approved by {wo.reviewedBy || 'the Captain'} {fmtStamp(wo.reviewedAt)}{wo.score ? `, ${wo.score}/10` : ''}{wo.reviewText ? `: “${wo.reviewText}”` : '.'} {isTeam ? 'Scores go on the record of each person who signed items.' : 'It is part of your work record.'}
         </div>
       )}
 
       <section className="wo-section">
         <h3>Job</h3>
-        {ro ? (
+        {ro || !canRun ? (
           <>
             {wo.description && <p className="pre">{wo.description}</p>}
-            <p className="hint">Captain or Owner: {[wo.contactName, wo.contactEmail].filter(Boolean).join(', ') || 'the boat’s Captain or Owner in the app'}</p>
+            <p className="hint">Captain or Owner: {[wo.contactName, canRun ? wo.contactEmail : ''].filter(Boolean).join(', ') || 'the boat’s Captain or Owner in the app'}{wo.poNumber ? `. PO ${wo.poNumber}` : ''}</p>
           </>
         ) : (
           <div className="form">
@@ -359,6 +408,17 @@ function WorkOrderDetail({ wo, business, onBack, onData }) {
                 <label>Their email<input type="email" value={f.contactEmail} onChange={(e) => change({ contactEmail: e.target.value })} /></label>
               </div>
             )}
+            <div className="two">
+              <label><span>PO number <span className="opt">(optional)</span></span><input value={f.poNumber} maxLength={40} onChange={(e) => change({ poNumber: e.target.value })} /></label>
+              {isTeam && can && can.assignLead && (
+                <label>Lead
+                  <select value={f.leadId} onChange={(e) => change({ leadId: e.target.value })}>
+                    <option value="">No lead yet</option>
+                    {team.filter((m) => m.status === 'active' && m.role !== 'tech').map((m) => <option key={m.userId} value={m.userId}>{m.name} ({m.roleLabel})</option>)}
+                  </select>
+                </label>
+              )}
+            </div>
             <label>Notes<textarea rows={2} value={f.description} onChange={(e) => change({ description: e.target.value })} /></label>
           </div>
         )}
@@ -372,18 +432,21 @@ function WorkOrderDetail({ wo, business, onBack, onData }) {
         {!f.items.length && <p className="empty">No items yet. Add one for each thing you find or fix.</p>}
         <ol className="wo-items">
           {f.items.map((it, i) => (
-            <ItemCard key={it.id} it={it} idx={i} count={f.items.length} ro={ro} busy={busy} credential={business.credential}
+            <ItemCard key={it.id} it={it} idx={i} count={f.items.length} busy={busy} credential={isTeam ? '' : business.credential}
+              ro={ro || (!canRun && it.assignedTo !== me)} team={team} names={names} canRun={canRun}
+              canSign={it.assignedTo ? it.assignedTo === me : canRun}
+              canUnsign={!!it.sign && (it.sign.userId ? it.sign.userId === me || senior : canRun)}
               onChange={(x) => setItem(i, x)} onMove={(by) => move(i, by)} onRemove={() => setRemoving(i)}
               onSign={(c) => sign(i, c)} onUnsign={() => unsign(i)} />
           ))}
         </ol>
-        {!ro && <button className="btn" onClick={() => change({ items: [...f.items, newItem()] })}>Add an item</button>}
+        {!ro && <button className="btn" onClick={() => change({ items: [...f.items, { ...newItem(), assignedTo: canRun ? '' : me }] })}>{canRun ? 'Add an item' : 'Write up a new item'}</button>}
       </section>
 
       <section className="wo-section">
         <h3>Notes</h3>
         {(wo.notes || []).length ? (
-          <ul className="wo-notes">{wo.notes.map((n) => <li key={n.id}><p className="pre">{n.text}</p><small className="muted">{fmtStamp(n.at)}</small></li>)}</ul>
+          <ul className="wo-notes">{wo.notes.map((n) => <li key={n.id}><p className="pre">{n.text}</p><small className="muted">{n.by && isTeam ? `${n.by}, ` : ''}{fmtStamp(n.at)}</small></li>)}</ul>
         ) : <p className="empty">No notes yet.</p>}
         {!ro && (
           <div className="wo-note-add">
@@ -393,7 +456,7 @@ function WorkOrderDetail({ wo, business, onBack, onData }) {
         )}
       </section>
 
-      {!ro && (
+      {!ro && canRun && (
         <section className="wo-section wo-send">
           <h3>Sign off and send for review</h3>
           {allSigned ? (
@@ -412,13 +475,13 @@ function WorkOrderDetail({ wo, business, onBack, onData }) {
         </section>
       )}
 
-      <InvoicePanel wo={wo} business={business} onData={onData} />
+      {can && can.invoice && <InvoicePanel wo={wo} business={business} onData={onData} />}
 
       {dirty && !ro && (
         <div className="wo-savebar">
           <span>Unsaved changes</span>
           <button className="btn" disabled={busy} onClick={() => { setF(fromWo(wo)); setDirty(false); }}>Discard</button>
-          <button className="btn primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save work order'}</button>
+          <button className="btn primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : canRun ? 'Save work order' : 'Save my work'}</button>
         </div>
       )}
 
@@ -492,6 +555,109 @@ function MyBusiness({ business, currencies, onData }) {
   );
 }
 
+
+/** The business's people. The owner adds them by email and sets their role; everyone else sees who is on the team. */
+function Team({ data, onData }) {
+  const isOwner = data.can && data.can.team;
+  const [f, setF] = useState({ email: '', name: '', role: 'tech' });
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [link, setLink] = useState('');
+  const [error, setError] = useState('');
+  const [removing, setRemoving] = useState(null);
+  const [leaving, setLeaving] = useState(false);
+  async function run(action, args, okMsg) {
+    setBusy(true); setError(''); setMsg(''); setLink('');
+    try { const r = await call(action, args); onData(r); setMsg(r.message || okMsg || ''); setLink(r.setupLink || ''); return r; }
+    catch (e) { setError(e.message); return null; } finally { setBusy(false); }
+  }
+  async function invite(e) {
+    e.preventDefault();
+    if (await run('inviteTeamMember', { member: f })) setF({ email: '', name: '', role: f.role });
+  }
+  const people = data.team || [];
+  return (
+    <div className="wo-team">
+      <section className="group">
+        <div className="group-head"><h3>{data.company.name || 'Your business'} <span className="count">{people.length}</span></h3></div>
+        <ul className="team-list">
+          {people.map((m) => (
+            <li key={m.userId} className="team-row">
+              <span className="team-main">
+                <b>{m.name}</b>
+                <small className="muted">{m.status === 'invited' ? 'Invited, has not accepted yet' : m.role === 'owner' ? 'Owner' : m.roleLabel}{isOwner && m.email ? `, ${m.email}` : ''}{isOwner && m.status === 'active' && m.setUp === false ? ', has not set a password yet' : ''}</small>
+              </span>
+              {isOwner && m.role !== 'owner' && (
+                <span className="team-actions">
+                  <select aria-label={`Role for ${m.name}`} value={m.role} disabled={busy} onChange={(e) => run('setTeamRole', { id: m.id, role: e.target.value }, `${m.name} is now ${ROLE_LABEL[e.target.value]}.`)}>
+                    <option value="supervisor">Supervisor</option><option value="lead">Lead</option><option value="tech">Technician</option>
+                  </select>
+                  {m.setUp === false && <button className="link" disabled={busy} onClick={() => run('resendTeamSetup', { id: m.id })}>Send link again</button>}
+                  <button className="link danger" disabled={busy} onClick={() => setRemoving(m)}>Remove</button>
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+        {msg && <div className="ok">{msg}</div>}
+        {link && <p className="hint setup-link">Sign-in link: <span className="break">{link}</span></p>}
+        {error && <div className="alert">{error}</div>}
+      </section>
+
+      {isOwner && (
+        <form className="form card team-add" onSubmit={invite}>
+          <h3>Add someone</h3>
+          <p className="hint">They get an email. Someone already on CJM Marine accepts the invitation; someone new sets a password. Their profile and work record stay theirs if they leave.</p>
+          <div className="two">
+            <label>Email<input type="email" required value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></label>
+            <label><span>Name <span className="opt">(for someone new)</span></span><input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></label>
+          </div>
+          <div className="role-pick" role="radiogroup" aria-label="Role">
+            {['supervisor', 'lead', 'tech'].map((k) => (
+              <label key={k} className={`role-opt${f.role === k ? ' on' : ''}`}>
+                <input type="radio" name="team-role" checked={f.role === k} onChange={() => setF({ ...f, role: k })} />
+                <span><b>{ROLE_LABEL[k]}</b><small>{ROLE_HELP[k]}</small></span>
+              </label>
+            ))}
+          </div>
+          <div className="actions left"><button className="btn primary" disabled={busy}>{busy ? 'Adding…' : 'Add to team'}</button></div>
+        </form>
+      )}
+
+      <section className="group role-guide">
+        <h3>Who does what</h3>
+        <dl>
+          {['owner', 'supervisor', 'lead', 'tech'].map((k) => <div key={k}><dt>{ROLE_LABEL[k]}</dt><dd>{ROLE_HELP[k]}</dd></div>)}
+        </dl>
+        <p className="hint">When the Captain scores a work order, the score goes on the record of each person who signed items on it.</p>
+      </section>
+
+      {!isOwner && (
+        <div className="actions left"><button className="btn" onClick={() => setLeaving(true)}>Leave {data.company.name}</button></div>
+      )}
+
+      {removing && (
+        <Modal title={`Remove ${removing.name}?`} onClose={() => setRemoving(null)}>
+          <p>{removing.name} will no longer see {data.company.name}'s work orders. Items they signed keep their signature. Unsigned items given to them go back to the lead to give to someone else.</p>
+          <div className="actions">
+            <button className="btn" onClick={() => setRemoving(null)}>Keep them</button>
+            <button className="btn primary danger-btn" disabled={busy} onClick={async () => { await run('removeTeamMember', { id: removing.id }, `${removing.name} was removed from the team.`); setRemoving(null); }}>Remove from team</button>
+          </div>
+        </Modal>
+      )}
+      {leaving && (
+        <Modal title={`Leave ${data.company.name}?`} onClose={() => setLeaving(false)}>
+          <p>You will no longer see its work orders. Items you signed keep your signature, and your scores stay on your record. Unsigned items given to you go back to the lead.</p>
+          <div className="actions">
+            <button className="btn" onClick={() => setLeaving(false)}>Stay</button>
+            <button className="btn primary danger-btn" disabled={busy} onClick={async () => { const r = await run('leaveTeam', { company: data.company.id }); setLeaving(false); if (r) setCompany(''); }}>Leave team</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 export default function WorkOrders() {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
@@ -500,7 +666,9 @@ export default function WorkOrders() {
   const [adding, setAdding] = useState(false);
   const [focus, setFocus] = useState('');
 
-  useEffect(() => { call('workOrders').then(setData).catch((e) => setError(e.message)); }, []);
+  const take = (r) => { if (r && r.company && r.company.id !== getCompany()) setCompany(r.company.id); setData(r); };
+  const load = () => call('workOrders').then(take).catch((e) => setError(e.message));
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const list = data ? data.workOrders : [];
   const byState = useMemo(() => {
@@ -513,12 +681,23 @@ export default function WorkOrders() {
   unpaid.forEach((w) => { unpaidByCur[w.invoice.currency] = (unpaidByCur[w.invoice.currency] || 0) + w.invoice.total; });
 
   if (!data) return error ? <div className="alert">{error}</div> : <p className="empty">Loading work orders…</p>;
+  if (!data.companies || !data.companies.length) {
+    return (
+      <div className="work-orders">
+        <p className="empty">{(data.teamInvites || []).length ? 'Accept the invitation at the top of the page to see the team\u2019s work orders.' : 'You are not on a contractor team. Turn on contractor work in My profile to make your own work orders.'}</p>
+      </div>
+    );
+  }
 
-  const take = (r) => setData(r);
+  const can = data.can || {};
+  const role = (data.company && data.company.role) || 'owner';
+  const team = data.team || [];
+  const isTeam = team.length > 1;
   const open = openId && list.find((w) => w.id === openId);
   if (open) {
-    return <WorkOrderDetail wo={open} business={data.business} onBack={() => setOpenId(null)} onData={take} />;
+    return <WorkOrderDetail wo={open} business={data.business} me={data.me} team={team} can={can} role={role} onBack={() => setOpenId(null)} onData={take} />;
   }
+  const switchTo = (id) => { setCompany(id); setOpenId(null); setFocus(''); setSub('orders'); setData(null); load(); };
   const live = list.filter((w) => w.status !== 'approved');
   const closed = list.filter((w) => w.status === 'approved');
   const shown = focus === 'unpaid' ? unpaid : focus ? (byState[focus] || []) : live.filter((w) => woState(w) !== 'changes');
@@ -526,16 +705,30 @@ export default function WorkOrders() {
 
   return (
     <div className="work-orders">
+      {data.companies.length > 1 && (
+        <label className="wo-company">Working for
+          <select value={data.company.id} onChange={(e) => switchTo(e.target.value)}>
+            {data.companies.map((c) => <option key={c.id} value={c.id}>{c.name}{c.role === 'owner' ? ' (my business)' : ` (${c.roleLabel})`}</option>)}
+          </select>
+        </label>
+      )}
       <nav className="subtabs">
         <button className={sub === 'orders' ? 'on' : ''} onClick={() => setSub('orders')}>Work orders</button>
-        <button className={sub === 'business' ? 'on' : ''} onClick={() => setSub('business')}>My business</button>
+        <button className={sub === 'team' ? 'on' : ''} onClick={() => setSub('team')}>Team{isTeam ? <span className="count">{team.length}</span> : ''}</button>
+        {can.business && <button className={sub === 'business' ? 'on' : ''} onClick={() => setSub('business')}>My business</button>}
       </nav>
 
-      {sub === 'business' && <MyBusiness business={data.business} currencies={data.currencies} onData={take} />}
+      {sub === 'business' && can.business && <MyBusiness business={data.business} currencies={data.currencies} onData={take} />}
+      {sub === 'team' && <Team data={data} onData={take} />}
 
       {sub === 'orders' && (
         <>
-          {!data.business.saved && (
+          {role !== 'owner' && (
+            <div className="review-note wo-role">
+              <span>You are <b>{data.company.roleLabel}</b> at {data.company.name}. {ROLE_HELP[role]}</span>
+            </div>
+          )}
+          {can.business && !data.business.saved && (
             <div className="starter-card card">
               <div>
                 <b>Add your business details</b>
@@ -545,24 +738,27 @@ export default function WorkOrders() {
             </div>
           )}
           <div className="group-head wo-top">
-            <p className="hint">Open a work order for any boat. Sign each item as you finish it, then send it to the Captain or Owner. Approved work joins your record.</p>
-            <button className="btn primary" onClick={() => setAdding(true)}>New work order</button>
+            <p className="hint">{can.create ? 'Open a work order for any boat. Sign each item as you finish it, then send it to the Captain or Owner. Approved work joins your record.'
+              : 'These are the work orders with items given to you. Sign each item as you finish it.'}</p>
+            {can.create && <button className="btn primary" onClick={() => setAdding(true)}>New work order</button>}
           </div>
-          <div className="gauge gauge-6 wo-gauge">
+          <div className={`gauge ${can.invoice ? 'gauge-6' : 'gauge-5'} wo-gauge`}>
             {BLOCKS.map(([k, label, cls]) => (
               <button key={k} type="button" className={`gauge-cell ${cls} ${focus === k ? 'focus' : ''}`} aria-pressed={focus === k} onClick={() => setFocus(focus === k ? '' : k)}>
                 <b>{(byState[k] || []).length}</b><span>{label}</span>
               </button>
             ))}
-            <button type="button" className={`gauge-cell money ${focus === 'unpaid' ? 'focus' : ''}`} aria-pressed={focus === 'unpaid'} onClick={() => setFocus(focus === 'unpaid' ? '' : 'unpaid')}>
-              <b>{unpaid.length}</b><span>Unpaid invoices{unpaid.length ? `, ${Object.entries(unpaidByCur).map(([c, n]) => money(n, c)).join(' + ')}` : ''}</span>
-            </button>
+            {can.invoice && (
+              <button type="button" className={`gauge-cell money ${focus === 'unpaid' ? 'focus' : ''}`} aria-pressed={focus === 'unpaid'} onClick={() => setFocus(focus === 'unpaid' ? '' : 'unpaid')}>
+                <b>{unpaid.length}</b><span>Unpaid invoices{unpaid.length ? `, ${Object.entries(unpaidByCur).map(([c, n]) => money(n, c)).join(' + ')}` : ''}</span>
+              </button>
+            )}
           </div>
 
           {attention.length > 0 && !focus && (
             <section className="group">
               <h3>Needs your attention <span className="count">{attention.length}</span></h3>
-              <div className="wo-list">{attention.map((w) => <WoRow key={w.id} wo={w} onOpen={setOpenId} />)}</div>
+              <div className="wo-list">{attention.map((w) => <WoRow key={w.id} wo={w} onOpen={setOpenId} team={isTeam} />)}</div>
             </section>
           )}
 
@@ -571,22 +767,23 @@ export default function WorkOrders() {
               <h3>{focus === 'unpaid' ? 'Unpaid invoices' : focus ? STATE_LABEL[focus] : 'Open work orders'} <span className="count">{shown.length}</span></h3>
               {focus && <button className="link" onClick={() => setFocus('')}>Show all open</button>}
             </div>
-            {shown.length ? <div className="wo-list">{shown.map((w) => <WoRow key={w.id} wo={w} onOpen={setOpenId} />)}</div>
+            {shown.length ? <div className="wo-list">{shown.map((w) => <WoRow key={w.id} wo={w} onOpen={setOpenId} team={isTeam} />)}</div>
               : <p className="empty">{focus ? 'Nothing here.' : 'No open work orders. Start one with New work order.'}</p>}
           </section>
 
           {closed.length > 0 && !focus && (
             <section className="group">
               <h3>Approved <span className="count">{closed.length}</span></h3>
-              <div className="wo-list">{closed.map((w) => <WoRow key={w.id} wo={w} onOpen={setOpenId} />)}</div>
+              <div className="wo-list">{closed.map((w) => <WoRow key={w.id} wo={w} onOpen={setOpenId} team={isTeam} />)}</div>
             </section>
           )}
         </>
       )}
 
       {adding && (
-        <NewWorkOrder boats={data.boats} onClose={() => setAdding(false)}
-          onDone={(r) => { setAdding(false); setData(r); setOpenId(r.workOrder.id); }} />
+        <NewWorkOrder boats={data.boats} me={role === 'lead' ? '' : data.me} leads={can.assignLead && isTeam ? team.filter((m) => m.status === 'active' && m.role !== 'tech') : null}
+          onClose={() => setAdding(false)}
+          onDone={(r) => { setAdding(false); take(r); setOpenId(r.workOrder.id); }} />
       )}
     </div>
   );

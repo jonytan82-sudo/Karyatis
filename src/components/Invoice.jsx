@@ -44,6 +44,7 @@ export function InvoiceDoc({ inv, business, contractorName, wo }) {
         <div><span>Bill to</span><b>{d.billToName || d.billToEmail || 'Not set'}</b>{d.billToName && d.billToEmail && <small>{d.billToEmail}</small>}</div>
         <div><span>Boat</span><b>{wo.boatName}</b></div>
         <div><span>Work order</span><b>{wo.number}</b><small>{wo.title}</small></div>
+        {d.poNumber && <div><span>PO number</span><b>{d.poNumber}</b></div>}
       </div>
       <table className="inv-table">
         <thead><tr><th>Item</th><th className="r">Qty or hours</th><th className="r">Rate</th><th className="r">Amount</th></tr></thead>
@@ -182,6 +183,9 @@ export function InvoicePanel({ wo, business, onData }) {
         <label>Bill to<input value={d.billToName || ''} disabled={ro} onChange={(e) => change((x) => ({ ...x, billToName: e.target.value }))} placeholder="Captain or Owner" /></label>
         <label>Send to email<input type="email" value={d.billToEmail || ''} disabled={ro} onChange={(e) => change((x) => ({ ...x, billToEmail: e.target.value }))} placeholder="captain@example.com" /></label>
       </div>
+      <label className="inv-po"><span>PO number <span className="opt">(the boat's purchase order, if they gave one)</span></span>
+        <input value={d.poNumber || ''} disabled={ro} maxLength={40} onChange={(e) => change((x) => ({ ...x, poNumber: e.target.value }))} />
+      </label>
 
       <div className="inv-lines">
         <div className="inv-line inv-line-head"><span>Item</span><span>Hours billed</span><span>Rate</span><span className="r">Amount</span></div>

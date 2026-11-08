@@ -1385,7 +1385,7 @@ button.gauge-cell.focus span { color: #fff; text-decoration: underline; }
 .inv-title { font-family: var(--display); font-size: 0.95rem; letter-spacing: 0.04em; color: var(--brass); font-weight: 700; }
 .inv-no { font-family: var(--display); font-size: 1.5rem; font-weight: 700; color: var(--ink); }
 .inv-paid { color: var(--green); font-weight: 700; border: 2px solid var(--green); display: inline-block; padding: 0.1rem 0.5rem; border-radius: 4px; margin-top: 0.3rem !important; }
-.inv-meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
+.inv-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; }
 .inv-meta div { display: flex; flex-direction: column; }
 .inv-meta span { font-size: 0.78rem; color: var(--muted); font-weight: 600; }
 .inv-meta small { color: var(--muted); }
@@ -1492,3 +1492,57 @@ button.gauge-cell.focus span { color: #fff; text-decoration: underline; }
 .boat-options button:hover, .boat-options button:focus-visible { background: var(--chart); }
 .boat-options small { color: var(--muted); font-size: 0.85rem; }
 .boat-picked { margin: 0; }
+
+/* ── 4.2: Find the part ── */
+.part-finder { display: flex; flex-direction: column; gap: 0.7rem; width: 100%; background: var(--chart); border-left: 4px solid var(--brass); border-radius: 6px; padding: 0.75rem 0.85rem; }
+.part-finder.compact { background: transparent; border-left: 0; padding: 0; }
+.pf-step { display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; }
+.pf-label { font-weight: 600; font-size: 0.95rem; }
+.pf-search { display: flex; gap: 0.5rem; min-width: 0; }
+.pf-search input { flex: 1; min-width: 0; }
+.pf-search .btn { white-space: nowrap; }
+.btn.disabled { opacity: 0.5; pointer-events: none; }
+.pf-sugs .supply-sug { cursor: pointer; font-family: inherit; }
+.pf-found { background: var(--paper); border: 1px solid var(--brass); border-radius: 6px; padding: 0.65rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.pf-found label { display: flex; flex-direction: column; gap: 0.2rem; font-weight: 500; }
+.pf-row { display: grid; grid-template-columns: minmax(0, 1fr) 5.5rem; gap: 0.5rem; }
+.part-row-head { font-size: 0.92rem; }
+.parts-needed > .hint { margin: 0 0 0.25rem; }
+@media (max-width: 520px) { .pf-search { flex-direction: column; } .pf-search .btn { text-align: center; } }
+
+/* ── 4.2: contractor teams ── */
+.wo-company { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.9rem; font-weight: 600; flex-wrap: wrap; }
+.wo-company select { min-width: 0; max-width: 100%; }
+.wo-role { margin-bottom: 0.9rem; }
+.subtabs .count { margin-left: 0.35rem; }
+.wo-assign { display: flex; align-items: center; gap: 0.6rem; font-weight: 600; flex-wrap: wrap; }
+.wo-assign select { min-width: 0; flex: 1; max-width: 22rem; }
+.wo-assign-ro { margin: 0; }
+.team-list { list-style: none; margin: 0.5rem 0 0; padding: 0; border-top: 1px solid var(--line); }
+.team-row { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; padding: 0.65rem 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.team-main { display: flex; flex-direction: column; min-width: 0; }
+.team-main small { overflow-wrap: anywhere; }
+.team-actions { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.team-add { margin: 1rem 0; display: flex; flex-direction: column; gap: 0.75rem; }
+.role-pick { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem; }
+.role-opt { display: flex; gap: 0.5rem; align-items: flex-start; border: 1px solid var(--line); border-radius: 6px; padding: 0.6rem; cursor: pointer; background: var(--paper); }
+.role-opt.on { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.role-opt input { margin-top: 0.25rem; }
+.role-opt span { display: flex; flex-direction: column; gap: 0.15rem; }
+.role-opt small { color: var(--muted); line-height: 1.35; }
+.role-guide dl { margin: 0.5rem 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.35rem 1rem; }
+.role-guide dl > div { display: contents; }
+.role-guide dt { font-weight: 600; }
+.role-guide dd { margin: 0; color: var(--muted); }
+.setup-link .break { overflow-wrap: anywhere; }
+.inv-po { display: flex; flex-direction: column; gap: 0.2rem; max-width: 22rem; font-weight: 500; }
+@media (max-width: 700px) {
+  .role-pick { grid-template-columns: 1fr; }
+  .role-guide dl { grid-template-columns: 1fr; }
+  .role-guide dd { margin-bottom: 0.4rem; }
+}
+.form .role-opt { flex-direction: row; align-items: flex-start; }
+.form .role-opt input { width: auto; flex: none; margin: 0.25rem 0 0; }
+.part-finder input, .team-actions select, .wo-company select, .wo-assign select { border: 1px solid var(--line); border-radius: 6px; padding: 0.55rem 0.7rem; background: var(--paper); }
+.part-finder input { width: 100%; }
+.pf-search input { width: auto; }
