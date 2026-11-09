@@ -110,7 +110,7 @@ function NewWorkOrder({ boats, leads, me, onClose, onDone }) {
         {picked ? (
           <div className="ok boat-picked">
             <b>{picked.vesselName} is on CJM Marine.</b>{' '}
-            {approvers && approvers.length ? `When you send it, the work order goes to ${approvers.join(', ')} for approval in the app.` : 'When you send it, it goes to the boat’s Captain or Owner in the app.'}{' '}
+            {approvers && approvers.length ? `${approvers.join(', ')} see it on the boat as soon as you open it, and approve it in the app when you send it.` : 'The boat’s Captain or Owner sees it as soon as you open it, and approves it in the app when you send it.'}{' '}
             <button type="button" className="link" onClick={() => { setPicked(null); setF({ ...f, boatName: '' }); }}>Change boat</button>
           </div>
         ) : (

@@ -254,10 +254,11 @@ export default function App() {
           a.jobs ? `${a.jobs} crew job${a.jobs === 1 ? '' : 's'}` : '',
           a.reviews ? `${a.reviews} task review${a.reviews === 1 ? '' : 's'}` : '',
         ].filter(Boolean);
+        const opened = a.opened ? `${a.openedBy.join(', ') || 'A contractor'} opened ${a.opened === 1 ? 'a new work order' : `${a.opened} new work orders`} on this boat.` : '';
         return (
           <div key={a.vesselId} className="approval-notice">
-            <span><b>{a.vesselName}:</b> {parts.join(', ')} waiting for your approval.</span>
-            <button className="btn primary" disabled={busy} onClick={() => openReviews(a.vesselId)}>Review now</button>
+            <span><b>{a.vesselName}:</b> {opened}{opened && parts.length ? ' ' : ''}{parts.length ? `${parts.join(', ')} waiting for your approval.` : ''}</span>
+            <button className="btn primary" disabled={busy} onClick={() => openReviews(a.vesselId)}>{parts.length ? 'Review now' : 'See it'}</button>
           </div>
         );
       })}

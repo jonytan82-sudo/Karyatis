@@ -1569,3 +1569,10 @@ button.gauge-cell.focus span { color: #fff; text-decoration: underline; }
 .m-notices .approval-notice .btn { flex: 1 1 auto; }
 .wo-part-link { font-size: 0.9rem; }
 .approval-notice a.btn { text-align: center; text-decoration: none; }
+.wip details > summary { cursor: pointer; list-style: none; }
+.wip details > summary::-webkit-details-marker { display: none; }
+.wip-head { display: flex; flex-direction: column; gap: 0.15rem; }
+.wip-head b { display: inline; margin-right: 0.4rem; }
+.wip.new { border-left: 4px solid var(--brass); padding-left: 0.6rem; }
+.new-chip { background: var(--brass); color: #fff; font-size: 0.75rem; padding: 0.05rem 0.45rem; border-radius: 999px; vertical-align: middle; }
+.wip-items { margin: 0.5rem 0 0.25rem 1.2rem; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }

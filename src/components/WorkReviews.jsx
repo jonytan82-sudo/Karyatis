@@ -125,7 +125,11 @@ export default function WorkReviews({ vessel, onChanged }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const loadReviews = () => call('listTaskReviews').then(setData).catch((e) => setError(e.message));
+  const loadReviews = () => call('listTaskReviews').then((r) => {
+    setData(r);
+    // opening Reviews marks new contractor work orders as seen (the notice on the menu goes away)
+    if (((r.approvals || {}).workInProgress || []).some((w) => !w.seen)) call('seenBoatWork').catch(() => {});
+  }).catch((e) => setError(e.message));
   useEffect(() => { loadReviews(); }, [vessel.id]); // eslint-disable-line react-hooks/exhaustive-deps
   useLiveReload(loadReviews);
 
@@ -137,6 +141,7 @@ export default function WorkReviews({ vessel, onChanged }) {
   if (!data) return error ? <div className="alert">{error}</div> : <p className="empty">Loading…</p>;
 
   const ap = data.approvals || { pending: [], done: [] };
+  const wip = ap.workInProgress || [];
   return (
     <div className="work-reviews">
       {error && <div className="alert">{error}</div>}
@@ -150,6 +155,38 @@ export default function WorkReviews({ vessel, onChanged }) {
           ))}
         </ul>
       </section>
+      {wip.length > 0 && (
+        <section className="group">
+          <h3>Contractor work in progress <span className="count">{wip.length}</span></h3>
+          <p className="hint">Work orders contractors opened on this boat. Follow the work here. When they finish and send it, it moves to Waiting for your approval.</p>
+          <ul className="wr-list">
+            {wip.map((w) => (
+              <li key={w.id} className={`wip${w.seen ? '' : ' new'}`}>
+                <details>
+                  <summary>
+                    <span className="wip-head">
+                      <b>{w.title}</b>{!w.seen && <span className="chip new-chip">New</span>}
+                      <small>{w.company}, {w.number}{w.poNumber ? `, PO ${w.poNumber}` : ''}. Opened {fmtStamp(w.openedAt)}{w.lead ? `, lead ${w.lead}` : ''}.</small>
+                      <small className="muted">{w.items.length ? `${w.signed} of ${w.items.length} item${w.items.length === 1 ? '' : 's'} signed` : 'No items yet'}</small>
+                    </span>
+                  </summary>
+                  {w.description && <p className="pre">{w.description}</p>}
+                  {w.items.length > 0 && (
+                    <ol className="wip-items">
+                      {w.items.map((i) => (
+                        <li key={i.no}>
+                          <b>{i.title}</b>{' '}
+                          <span className="muted">{i.signedBy ? `Signed by ${i.signedBy}` : i.status === 'parts' ? 'Waiting on parts' : i.status === 'active' ? 'In work' : 'Not started'}{!i.signedBy && i.assignedName ? `, ${i.assignedName}` : ''}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </details>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       <section className="group">
         <h3>Work reviews requested <span className="count">{data.pending.length}</span></h3>
         <p className="hint">Crew ask for these after finishing a task. Reviews are optional and become part of their personal record, which stays with them when they change boats.</p>
