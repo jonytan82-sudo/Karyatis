@@ -261,6 +261,12 @@ export default function App() {
           </div>
         );
       })}
+      {(s.emailedToMe || []).map((w) => (
+        <div key={w.token} className="approval-notice">
+          <span><b>{w.boatName}:</b> {w.from} asks you to approve {w.kind === 'workorder' ? 'a work order' : 'work'}, "{w.title}".</span>
+          <a className="btn primary" href={`/?w=${w.token}`}>Review now</a>
+        </div>
+      ))}
       {s.jobUpdates > 0 && tab !== 'profile' && (
         <div className="ok job-news">
           {s.jobUpdates === 1 ? 'A captain answered one of your jobs.' : `Captains answered ${s.jobUpdates} of your jobs.`}{' '}

@@ -761,6 +761,7 @@ function bootstrap(user, vesselId) {
     jobUpdates: jobUpdatesFor(user.id),
     teamInvites: teamInvitesFor(user),
     approvalsWaiting: approvalsWaiting(user),
+    emailedToMe: workEmailedTo(user),
     catalog: roleCatalog()
   };
 
@@ -3378,13 +3379,14 @@ const WORK_ROLES = ['Captain', 'Owner', 'Yacht manager', 'Chief Officer', 'Chief
 function emailOk(e) { return /^[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+$/.test(e); }
 
 /** The vessel a Captain/Owner email runs on CJM Marine (matched by boat name, or their only boat). */
-function vesselForReviewer(email, boatName) {
+/** The Captain's boat with this name. strict: the name must match (a contractor's work order must never land on another boat's log). */
+function vesselForReviewer(email, boatName, strict) {
   const u = readTable('Users').find(x => x.email === email && isTrue(x.active) && !isDeletedUser(x));
   if (!u) return null;
   const vs = readTable('Vessels').filter(v => isTrue(v.active) && !v.deletedAt);
   const theirs = readTable('Memberships').filter(m => m.userId === u.id && m.status === 'active' && permsOfMember(m).hires)
     .map(m => vs.find(v => v.id === m.vesselId)).filter(Boolean);
-  return theirs.find(v => normVessel(v.name) === normVessel(boatName)) || (theirs.length === 1 ? theirs[0] : null);
+  return theirs.find(v => normVessel(v.name) === normVessel(boatName)) || (!strict && theirs.length === 1 ? theirs[0] : null);
 }
 
 function joinUrl(boatName) {
@@ -3539,6 +3541,16 @@ function approvalsWaiting(user) {
                from: wo.map(x => names[x.userId] || '').filter(Boolean).filter((n, i, a) => a.indexOf(n) === i).slice(0, 3) };
     })
     .filter(x => x.workOrders + x.jobs + x.reviews > 0);
+}
+
+/** Work sent "by email" to this person's address (the boat is not linked on CJM Marine): show it on their page too. */
+function workEmailedTo(user) {
+  const email = String(user.email || '').toLowerCase();
+  if (!email) return [];
+  const names = crewNames();
+  return readTable('WorkSubmissions').filter(x => x.status === 'pending' && x.token && !x.vesselId && x.userId !== user.id &&
+      String(x.contactEmail || '').toLowerCase() === email && (!x.tokenExpires || x.tokenExpires >= today()))
+    .map(x => ({ token: x.token, from: names[x.userId] || 'A contractor', title: x.title, boatName: x.boatName, kind: x.kind }));
 }
 
 function pendingWorkFor(vesselId, reviewerId) {
@@ -5279,7 +5291,7 @@ function submitWorkOrder(t, id, o) {
 
   let vessel = null;
   if (row.vesselId) vessel = readTable('Vessels').find(v => v.id === row.vesselId && isTrue(v.active)) || null;
-  if (!vessel && row.contactEmail) vessel = vesselForReviewer(row.contactEmail, row.boatName);
+  if (!vessel && row.contactEmail) vessel = vesselForReviewer(row.contactEmail, row.boatName, true);
   const reviewers = vessel ? approversFor(vessel.id, t) : [];
   if (!reviewers.length) vessel = null;
   if (!vessel && !emailOk(row.contactEmail)) throw new Error(row.boatName + ' has no Captain or Owner on CJM Marine yet. Add their email so they can review it.');

@@ -1568,3 +1568,4 @@ button.gauge-cell.focus span { color: #fff; text-decoration: underline; }
 .approval-notice span { flex: 1 1 14rem; min-width: 0; }
 .m-notices .approval-notice .btn { flex: 1 1 auto; }
 .wo-part-link { font-size: 0.9rem; }
+.approval-notice a.btn { text-align: center; text-decoration: none; }
