@@ -1576,3 +1576,8 @@ button.gauge-cell.focus span { color: #fff; text-decoration: underline; }
 .wip.new { border-left: 4px solid var(--brass); padding-left: 0.6rem; }
 .new-chip { background: var(--brass); color: #fff; font-size: 0.75rem; padding: 0.05rem 0.45rem; border-radius: 999px; vertical-align: middle; }
 .wip-items { margin: 0.5rem 0 0.25rem 1.2rem; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.boat-chip { display: inline-block; margin-left: 0.45rem; font-size: 0.72rem; font-weight: 600; padding: 0.1rem 0.5rem; border-radius: 999px; vertical-align: middle; white-space: nowrap; }
+.boat-chip.wait { background: #f4ead7; color: #6b4d1d; }
+.boat-chip.ok { background: #e1efe4; color: #23573a; }
+.boat-chip.no { background: #f6e1df; color: #8a2f26; }
+.kind-woopen, .kind-woitem, .kind-workorder { background: #f4ecdf; color: var(--brass); }

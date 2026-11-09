@@ -148,6 +148,12 @@ function NewWorkOrder({ boats, leads, me, onClose, onDone }) {
 }
 
 /** One item on the work order: what was found, what was done, labor, parts, and the signature. */
+const BOAT_CHIP = { pending: ['Waiting for the Captain', 'wait'], approved: ['Approved for the log', 'ok'], declined: ['Not approved', 'no'] };
+function BoatChip({ boat }) {
+  const [label, cls] = boat.logged ? ['On the boat’s log', 'ok'] : BOAT_CHIP[boat.status] || ['', ''];
+  return label ? <span className={`boat-chip ${cls}`} title={boat.note || ''}>{label}</span> : null;
+}
+
 function ItemCard({ it, idx, count, ro, credential, onChange, onMove, onRemove, onSign, onUnsign, busy, team, canRun, canSign, canUnsign, names, supplies }) {
   const [labor, setLabor] = useState({ date: todayISO(), hours: '', note: '' });
   const [cred, setCred] = useState(credential || '');
@@ -168,7 +174,7 @@ function ItemCard({ it, idx, count, ro, credential, onChange, onMove, onRemove, 
       <div className="wo-item-head">
         <button type="button" className="wo-item-toggle" onClick={() => setOpen(!open)} aria-expanded={open}>
           <span className="wo-no">{idx + 1}</span>
-          <span className="wo-item-title"><b>{it.title || 'New item'}</b>
+          <span className="wo-item-title"><b>{it.title || 'New item'}</b>{it.boat && <BoatChip boat={it.boat} />}
             <small>{[it.system, hours ? `${Math.round(hours * 10) / 10} hr` : '', (it.parts || []).length ? `${it.parts.length} part${it.parts.length === 1 ? '' : 's'}` : '',
               team && team.length > 1 ? (it.assignedTo ? (names[it.assignedTo] || it.assignedName || 'Someone who left') : 'Not given to anyone') : ''].filter(Boolean).join(', ')}</small>
           </span>
@@ -177,6 +183,8 @@ function ItemCard({ it, idx, count, ro, credential, onChange, onMove, onRemove, 
       </div>
       {open && (
         <div className="wo-item-body">
+          {it.boat && it.boat.status === 'declined' && <p className="hint">The Captain did not approve this item{it.boat.note ? `: “${it.boat.note}”` : '.'} It will not go on the boat's record.</p>}
+          {it.boat && it.boat.status === 'pending' && <p className="hint">Sent to the Captain to approve. You can keep working on it.</p>}
           {team && team.length > 1 && (canRun && !ro && !it.sign ? (
             <label className="wo-assign">Given to
               <select value={it.assignedTo || ''} onChange={(e) => set('assignedTo', e.target.value)}>
@@ -366,13 +374,23 @@ function WorkOrderDetail({ wo, business, onBack, onData, me, team, can, role, su
 
       {!canRun && wo.status === 'open' && (
         <div className="review-note wo-banner">
-          <span>{mineOpen ? `${mineOpen} item${mineOpen === 1 ? ' is' : 's are'} given to you. Log your hours and parts, write the work done, then sign ${mineOpen === 1 ? 'it' : 'each one'}.` : 'Your items are signed.'} You can also add an item for anything new you find. {wo.leadName || 'The lead'} sends the work order to the Captain.</span>
+          <span>{mineOpen ? `${mineOpen} item${mineOpen === 1 ? ' is' : 's are'} given to you. Log your hours and parts, write the work done, then sign ${mineOpen === 1 ? 'it' : 'each one'}.` : 'Your items are signed.'} You can also add an item for anything new you find. {wo.perItem ? 'Each item goes to the Captain to approve as it is added.' : `${wo.leadName || 'The lead'} sends the work order to the Captain.`}</span>
         </div>
       )}
       {wo.match && (
         <div className="review-note wo-banner">
           <span><b>{wo.match.vesselName}</b>{wo.match.homePort ? ` (${wo.match.homePort})` : ''} is on CJM Marine. Link this work order so it goes to {wo.match.approvers.join(', ')} for approval in the app?</span>
           <button className="btn" disabled={busy} onClick={() => run('linkWorkOrder', { id: wo.id, vesselId: wo.match.vesselId })}>Link to {wo.match.vesselName}</button>
+        </div>
+      )}
+      {wo.perItem && wo.boatStatus === 'pending' && wo.status === 'open' && (
+        <div className="review-note wo-banner">
+          <span>Waiting for {(wo.approvers || []).join(', ') || `the Captain of ${wo.boatName}`} to approve this work order. You can keep working on it. Each item you add also goes to them to approve before it goes on {wo.boatName}'s record.</span>
+        </div>
+      )}
+      {wo.perItem && wo.boatStatus === 'declined' && (
+        <div className="alert wo-banner">
+          <span>{wo.boatBy || 'The Captain'} did not approve this work order{wo.boatNote ? `: “${wo.boatNote}”` : '.'} Nothing from it goes on {wo.boatName}'s record. You can still invoice your work.</span>
         </div>
       )}
       {wo.status === 'review' && wo.review === 'pending' && (
@@ -389,7 +407,12 @@ function WorkOrderDetail({ wo, business, onBack, onData, me, team, can, role, su
           {canRun && <button className="btn" disabled={busy} onClick={() => run('reopenWorkOrder', { id: wo.id }, 'Reopened. Fix it and send it again.')}>Reopen to fix and resend</button>}
         </div>
       )}
-      {wo.status === 'approved' && (
+      {wo.status === 'approved' && wo.perItem && (
+        <div className="ok wo-banner">
+          Closed {fmtStamp(wo.signedAt)}. {f.items.filter((i) => i.boat && i.boat.status === 'approved').length} of {f.items.length} items are on {wo.boatName}'s log.
+        </div>
+      )}
+      {wo.status === 'approved' && !wo.perItem && (
         <div className="ok wo-banner">
           Approved by {wo.reviewedBy || 'the Captain'} {fmtStamp(wo.reviewedAt)}{wo.score ? `, ${wo.score}/10` : ''}{wo.reviewText ? `: “${wo.reviewText}”` : '.'} {isTeam ? 'Scores go on the record of each person who signed items.' : 'It is part of your work record.'}
         </div>
@@ -443,7 +466,7 @@ function WorkOrderDetail({ wo, business, onBack, onData, me, team, can, role, su
             <ItemCard key={it.id} it={it} idx={i} count={f.items.length} busy={busy} credential={isTeam ? '' : business.credential}
               ro={ro || (!canRun && it.assignedTo !== me)} team={team} names={names} canRun={canRun}
               canSign={it.assignedTo ? it.assignedTo === me : canRun}
-              canUnsign={!!it.sign && (it.sign.userId ? it.sign.userId === me || senior : canRun)}
+              canUnsign={!!it.sign && !(it.boat && it.boat.logged) && (it.sign.userId ? it.sign.userId === me || senior : canRun)}
               supplies={supplies} onChange={(x) => setItem(i, x)} onMove={(by) => move(i, by)} onRemove={() => setRemoving(i)}
               onSign={(c) => sign(i, c)} onUnsign={() => unsign(i)} />
           ))}
@@ -466,8 +489,15 @@ function WorkOrderDetail({ wo, business, onBack, onData, me, team, can, role, su
 
       {!ro && canRun && (
         <section className="wo-section wo-send">
-          <h3>Sign off and send for review</h3>
-          {allSigned ? (
+          <h3>{wo.perItem ? 'Close the work order' : 'Sign off and send for review'}</h3>
+          {wo.perItem ? (allSigned ? (
+            <>
+              <p className="hint">Every item is signed. Approved items are already signed off on {wo.boatName}'s log. Closing lets {(wo.approvers || []).join(', ') || 'the Captain'} know the job is finished.</p>
+              <div className="actions left"><button className="btn primary" disabled={busy} onClick={send}>Close work order</button></div>
+            </>
+          ) : (
+            <p className="hint">Each item goes on {wo.boatName}'s log when the Captain approves it and it is signed. Sign every item to close the work order. {f.items.filter((i) => !i.sign).length} of {f.items.length} still to sign.</p>
+          )) : allSigned ? (
             <>
               <p className="hint">
                 {wo.onPlatform || !f.contactEmail

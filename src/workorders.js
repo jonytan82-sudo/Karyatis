@@ -28,7 +28,7 @@ export const partsWaiting = (wo) => (wo.items || []).reduce((n, it) => n + (it.p
 
 /** Where a work order stands, for the board. */
 export function woState(wo) {
-  if (wo.status === 'approved') return 'approved';
+  if (wo.status === 'approved') return wo.perItem ? 'closed' : 'approved';
   if (wo.status === 'review') return wo.review === 'pending' ? 'review' : 'changes';
   const items = wo.items || [];
   if (!items.length) return 'open';
@@ -40,7 +40,7 @@ export function woState(wo) {
 
 export const STATE_LABEL = {
   open: 'Open', active: 'In progress', parts: 'Waiting on parts', ready: 'Ready to send',
-  review: 'With the Captain', changes: 'Needs your attention', approved: 'Approved',
+  review: 'With the Captain', changes: 'Needs your attention', approved: 'Approved', closed: 'Closed',
 };
 
 export function invTotals(d) {

@@ -75,7 +75,7 @@ const SHEETS = {
   WorkSubmissions: ['id', 'kind', 'vesselId', 'boatName', 'userId', 'title', 'system', 'description', 'performedDate',
                     'dueDate', 'recurring', 'intervalValue', 'intervalUnit', 'wantScore', 'contactEmail', 'contactName',
                     'token', 'tokenExpires', 'status', 'decidedBy', 'decidedLabel', 'decidedAt', 'decisionNote',
-                    'score', 'reviewText', 'taskId', 'completionId', 'createdAt', 'senderSeen', 'woId'],
+                    'score', 'reviewText', 'taskId', 'completionId', 'createdAt', 'senderSeen', 'woId', 'woItemId'],
   // Rule records reviewed by a marine compliance consultant (see RULES below)
   Rules:       ['id', 'title', 'system', 'basis', 'authority', 'jurisdiction', 'source', 'sourceRef', 'edition',
                 'appliesFlags', 'appliesUsage', 'minLength', 'maxLength', 'minGT', 'maxGT', 'minPassengers', 'maxPassengers', 'classed', 'area',
@@ -98,7 +98,7 @@ const SHEETS = {
   Businesses:  ['userId', 'name', 'phone', 'email', 'address', 'credential', 'currency', 'rate', 'taxRate', 'consumablesPct',
                 'mileRate', 'travelRate', 'payTo', 'payAddress', 'payHow', 'payTerms', 'updatedAt'],
   WorkOrders:  ['id', 'number', 'userId', 'vesselId', 'boatName', 'contactName', 'contactEmail', 'title', 'description',
-                'items', 'notes', 'status', 'submissionId', 'openedAt', 'editedAt', 'signedAt', 'createdBy', 'leadId', 'poNumber', 'boatSeenAt'],
+                'items', 'notes', 'status', 'submissionId', 'openedAt', 'editedAt', 'signedAt', 'createdBy', 'leadId', 'poNumber', 'boatSeenAt', 'boatStatus', 'boatSubId'],
   // People who work for a contractor's business: owner (the Businesses row), supervisors, leads and technicians
   TeamMembers: ['id', 'ownerId', 'userId', 'role', 'status', 'invitedBy', 'invitedAt', 'joinedAt', 'leftAt'],
   Invoices:    ['id', 'number', 'woId', 'userId', 'vesselId', 'boatName', 'data', 'total', 'currency', 'status',
@@ -784,7 +784,7 @@ function bootstrap(user, vesselId) {
       out.vesselRequests = c.perms.manageCrew ? requestsVisibleTo(user, c.vessel.id).length : 0;
       out.canReviewWork = isVesselReviewer(c.vessel.id, user.id);
       out.pendingTaskReviews = out.canReviewWork ? pendingReviewsFor(c.vessel.id, user.id).length + pendingWorkFor(c.vessel.id, user.id).length +
-        boatWorkOrders(c.vessel.id, user.id).filter(w => !w.seen).length : 0;
+        boatWorkOrders(c.vessel.id, user.id).filter(w => !w.seen && !w.perItem).length : 0;
       out.canSubmitWork = !!c.membership && !c.perms.viewOnly;
       out.isBuyer = isBuyer(c);
       out.partsPending = out.isBuyer ? readTable('SupplyOrders').filter(o => o.vesselId === c.vessel.id && o.status === 'requested').length : 0;
@@ -3372,7 +3372,10 @@ function addDemoRotations_() {
 //  - external: crew or contractors log a job on any boat and name its Captain or Owner by email.
 //              If that person runs the boat on CJM Marine, it waits in their Reviews tab like "done".
 //              If not, they get an email link to confirm and score it without an account, plus an optional invitation to join.
-const WORK_KINDS = { suggest: 'Suggested task', done: 'Work done', external: 'Job on another boat', workorder: 'Contractor work order' };
+const WORK_KINDS = { suggest: 'Suggested task', done: 'Work done', external: 'Job on another boat', workorder: 'Contractor work order',
+                     woopen: 'New contractor work order', woitem: 'Work order item' };
+// Requests that belong to a contractor's work order on a CJM boat: they show in the work order, not in My jobs.
+const WO_KINDS = { woopen: 1, woitem: 1 };
 const WORK_PENDING_MAX = 30;      // waiting requests per person
 const WORK_EXTERNAL_PER_DAY = 10; // emails to Captains outside CJM Marine, per person per day
 const WORK_LINK_DAYS = 60;        // how long the emailed review link works
@@ -3400,7 +3403,7 @@ function submitWork(user, w) {
   if (!kind) throw new Error('Choose what you are sending');
   const title = clip(w.title, 200);
   if (!title) throw new Error('Say what the job is');
-  const mine = readTable('WorkSubmissions').filter(x => x.userId === user.id);
+  const mine = readTable('WorkSubmissions').filter(x => x.userId === user.id && !WO_KINDS[x.kind]);
   if (mine.filter(x => x.status === 'pending').length >= WORK_PENDING_MAX) {
     throw new Error('You have ' + WORK_PENDING_MAX + ' requests waiting for an answer. Cancel some or wait for answers first.');
   }
@@ -3494,7 +3497,7 @@ function workFiles(subId) {
 /** Jobs the person sent that were answered since they last looked. */
 function jobUpdatesFor(userId) {
   if (!SHEETS.WorkSubmissions) return 0;
-  return readTable('WorkSubmissions').filter(x => x.userId === userId && (x.status === 'approved' || x.status === 'declined') && !isTrue(x.senderSeen)).length;
+  return readTable('WorkSubmissions').filter(x => x.userId === userId && !WO_KINDS[x.kind] && (x.status === 'approved' || x.status === 'declined') && !isTrue(x.senderSeen)).length;
 }
 
 function mySubmissions(user, markSeen) {
@@ -3502,7 +3505,7 @@ function mySubmissions(user, markSeen) {
   const names = crewNames();
   const files = {};
   readTable('Attachments').forEach(a => { if (String(a.taskId).indexOf('WS:') === 0) (files[a.taskId.slice(3)] = files[a.taskId.slice(3)] || []).push(attachmentView(a)); });
-  const list = readTable('WorkSubmissions').filter(x => x.userId === user.id && x.status !== 'cancelled')
+  const list = readTable('WorkSubmissions').filter(x => x.userId === user.id && x.status !== 'cancelled' && !WO_KINDS[x.kind])
     .sort((a, b) => a.createdAt < b.createdAt ? 1 : -1).slice(0, 60)
     .map(x => ({ id: x.id, kind: x.kind, kindLabel: WORK_KINDS[x.kind], title: x.title, system: x.system, description: x.description,
                  performedDate: x.performedDate, boatName: vs[x.vesselId] || x.boatName, onPlatform: !!x.vesselId,
@@ -3538,12 +3541,13 @@ function approvalsWaiting(user) {
   return readTable('Memberships').filter(m => m.userId === user.id && m.status === 'active' && vs[m.vesselId] && permsOfMember(m).hires)
     .map(m => {
       const work = pendingWorkFor(m.vesselId, user.id);
-      const wo = work.filter(x => x.kind === 'workorder');
-      const opened = boatWorkOrders(m.vesselId, user.id).filter(w => !w.seen);
-      return { vesselId: m.vesselId, vesselName: vs[m.vesselId], workOrders: wo.length, jobs: work.length - wo.length,
+      const wo = work.filter(x => x.kind === 'workorder' || x.kind === 'woopen');
+      const woItems = work.filter(x => x.kind === 'woitem');
+      const opened = boatWorkOrders(m.vesselId, user.id).filter(w => !w.seen && !w.perItem);
+      return { vesselId: m.vesselId, vesselName: vs[m.vesselId], workOrders: wo.length, woItems: woItems.length, jobs: work.length - wo.length - woItems.length,
                opened: opened.length, openedBy: opened.map(w => w.company).filter((n, i, a) => a.indexOf(n) === i).slice(0, 3),
                reviews: pendingReviewsFor(m.vesselId, user.id).length,
-               from: wo.map(x => { const w = wos[x.woId]; return w ? companyName(w.userId) : names[x.userId] || ''; }).filter(Boolean).filter((n, i, a) => a.indexOf(n) === i).slice(0, 3) };
+               from: wo.concat(woItems).map(x => { const w = wos[x.woId]; return w ? companyName(w.userId) : names[x.userId] || ''; }).filter(Boolean).filter((n, i, a) => a.indexOf(n) === i).slice(0, 3) };
     })
     .filter(x => x.workOrders + x.jobs + x.reviews + x.opened > 0);
 }
@@ -3574,7 +3578,8 @@ function approvalsFor(c, user) {
              wantScore: isTrue(x.wantScore), boatName: x.boatName, createdAt: x.createdAt, status: x.status,
              decidedBy: names[x.decidedBy] || '', decidedAt: x.decidedAt, decisionNote: x.decisionNote,
              score: x.score ? Number(x.score) : null, taskId: x.taskId, attachments: workFiles(x.id),
-             woId: x.woId || '', invoice: x.woId ? invoiceSummary(x.woId) : null };
+             woId: x.woId || '', invoice: x.woId && x.kind === 'workorder' ? invoiceSummary(x.woId) : null, woItemId: x.woItemId || '',
+             company: x.woId ? companyName((readTable('WorkOrders').find(w => w.id === x.woId) || {}).userId || x.userId) : '' };
   };
   const all = readTable('WorkSubmissions').filter(x => x.vesselId === c.vessel.id && x.userId !== user.id && x.status !== 'cancelled');
   return {
@@ -3597,10 +3602,10 @@ function boatWorkOrders(vesselId, viewerId) {
     .sort((a, b) => a.w.openedAt < b.w.openedAt ? 1 : -1).slice(0, 30)
     .map(({ w, team }) => {
       const items = parseList(w.items);
-      return { id: w.id, number: w.number, title: w.title, description: w.description, company: companyName(w.userId),
+      return { id: w.id, number: w.number, title: w.title, description: w.description, company: companyName(w.userId), perItem: !!w.boatSubId, boatStatus: w.boatStatus || '',
                lead: team[w.leadId] || '', openedAt: w.openedAt, editedAt: w.editedAt, poNumber: w.poNumber || '', seen: !!w.boatSeenAt,
                signed: items.filter(i => i.sign).length,
-               items: items.map(i => ({ no: i.no, title: i.title, status: i.status, signedBy: i.sign ? i.sign.name : '',
+               items: items.map(i => ({ no: i.no, title: i.title, status: i.status, signedBy: i.sign ? i.sign.name : '', boat: i.boat ? i.boat.status : '',
                                         assignedName: i.assignedTo ? team[i.assignedTo] || '' : '' })) };
     });
 }
@@ -3632,6 +3637,7 @@ function decideWork(c, user, id, d) {
   if (!x) throw new Error('Request not found');
   if (x.status !== 'pending') throw new Error('This request was already ' + (x.status === 'cancelled' ? 'withdrawn' : 'answered'));
   if (x.userId === user.id) throw new Error('You cannot approve your own request');
+  if (decideWoRequest(c, user, x, d)) return listTaskReviews(c, user);
   const crew = readTable('Users').find(u => u.id === x.userId);
   const now = nowIso();
   x.decidedBy = user.id; x.decidedAt = now; x.decisionNote = clip(d.note, 500); x.senderSeen = '';
@@ -4807,6 +4813,146 @@ function atLeast(t, role) { return (TEAM_RANK[t.role] || 0) >= TEAM_RANK[role]; 
 function requireRank(t, role, what) {
   if (!atLeast(t, role)) throw new Error('Only ' + { owner: 'the owner', supervisor: 'a supervisor or the owner', lead: 'a lead, a supervisor or the owner' }[role] + ' can ' + what);
 }
+
+// ── Contractor work orders on a CJM boat: the Captain approves the work order when it is opened, then each item as it is
+// added (like a task). An approved item goes on the boat's log as an open item; when the contractor signs it, it is
+// signed off on the log, credited to the person who signed it. Work orders for boats not on CJM Marine keep the emailed review.
+
+function woSub(row, t, kind, extra) {
+  return Object.assign({ id: newId('WS'), kind, vesselId: row.vesselId, boatName: row.boatName, userId: t.user.id, title: '', system: '',
+    description: '', performedDate: '', dueDate: '', recurring: 'FALSE', intervalValue: '', intervalUnit: '', wantScore: 'FALSE',
+    contactEmail: '', contactName: '', token: '', tokenExpires: '', status: 'pending', decidedBy: '', decidedLabel: '', decidedAt: '',
+    decisionNote: '', score: '', reviewText: '', taskId: '', completionId: '', createdAt: nowIso(), senderSeen: '', woId: row.id, woItemId: '' }, extra);
+}
+
+/** Ask the boat's Captain and Owner to approve a new work order (row is changed; the caller saves it). */
+function requestBoatApproval(t, row) {
+  if (!row.vesselId || row.boatSubId) return false;
+  const vessel = readTable('Vessels').find(v => v.id === row.vesselId);
+  const caps = vessel ? approversFor(vessel.id, t) : [];
+  if (!caps.length) return false;
+  const sub = woSub(row, t, 'woopen', { title: clip(row.number + ': ' + row.title, 200),
+    description: [row.description, row.poNumber ? 'PO ' + row.poNumber : '', 'Contractor: ' + t.companyName].filter(Boolean).join('\n') });
+  insert('WorkSubmissions', sub);
+  row.boatSubId = sub.id; row.boatStatus = 'pending';
+  const who = t.user.name + (t.companyName && t.companyName !== t.user.name ? ' (' + t.companyName + ')' : '');
+  sendMail(caps.map(c => c.email).join(','), 'Approve work order on ' + vessel.name + ': ' + row.title,
+    '<p><b>' + esc(who) + '</b> opened a work order on <b>' + esc(vessel.name) + '</b> and asks you to approve it.</p>' +
+    '<p><b>' + esc(row.number + ': ' + row.title) + '</b>' + (row.poNumber ? '<br>PO ' + esc(row.poNumber) : '') +
+    (row.description ? '<br>' + esc(row.description) : '') + '</p>' +
+    '<p>Open <b>Reviews</b> to approve or decline it. Each item they add also comes to you to approve before it goes on the boat\'s record.</p>' + appLink());
+  return true;
+}
+
+function itemText(row, i) {
+  return [row.number + ': ' + row.title + ', item ' + i.no, i.discrepancy ? 'Found: ' + i.discrepancy : '', i.corrective ? 'Work: ' + i.corrective : '']
+    .filter(Boolean).join('\n');
+}
+
+/** New items go to the Captain to approve; edited ones update their request; removed ones withdraw it; signed approved ones are logged. */
+function syncItemApprovals(t, row, prev, items) {
+  if (!row.vesselId || !row.boatSubId || row.boatStatus === 'declined') return items;
+  const subs = {};
+  readTable('WorkSubmissions').filter(x => x.woId === row.id && x.kind === 'woitem').forEach(x => subs[x.id] = x);
+  items.forEach(i => {
+    if (!i.boat) {
+      const sub = woSub(row, t, 'woitem', { title: clip(i.title, 200), system: i.system || '', description: clip(itemText(row, i), 3000), woItemId: i.id });
+      insert('WorkSubmissions', sub);
+      i.boat = { subId: sub.id, status: 'pending' };
+    } else if (i.boat.status === 'pending') {
+      const x = subs[i.boat.subId];
+      const text = clip(itemText(row, i), 3000);
+      if (x && x.status === 'pending' && (x.title !== i.title || x.system !== (i.system || '') || x.description !== text)) {
+        x.title = clip(i.title, 200); x.system = i.system || ''; x.description = text; update('WorkSubmissions', x._row, x);
+      }
+    } else if (i.boat.status === 'approved' && i.sign && !i.boat.logged) {
+      logItemOnBoat(row, i);
+    }
+  });
+  const keep = {}; items.forEach(i => keep[i.id] = 1);
+  prev.filter(o => !keep[o.id] && o.boat && o.boat.status === 'pending').forEach(o => {
+    const x = subs[o.boat.subId];
+    if (x && x.status === 'pending') { x.status = 'cancelled'; update('WorkSubmissions', x._row, x); }
+  });
+  return items;
+}
+
+/** A signed item on an approved line: signed off on the boat's log, credited to the person who signed it. */
+function logItemOnBoat(row, i) {
+  const task = readTable('Tasks').find(k => k.id === i.boat.taskId && k.vesselId === row.vesselId);
+  i.boat.logged = true;
+  if (!task || task.state !== 'Open') return;
+  const date = String(i.sign.at || nowIso()).slice(0, 10);
+  const by = i.sign.userId || row.createdBy || row.userId;
+  const notes = clip((i.corrective || i.title) + '\n' + row.number + ', signed by ' + i.sign.name + (i.sign.credential ? ', ' + i.sign.credential : '') +
+                     ' (' + companyName(row.userId) + ')', 2000);
+  const timing = task.dueDate ? (daysBetween(task.dueDate, date) > 0 ? 'Late by ' + daysBetween(task.dueDate, date) + 'd' : 'On time') : 'No due date';
+  insert('Completions', { id: newId('X'), taskId: task.id, dueDate: task.dueDate, performedDate: date, performedBy: by, timing, notes, loggedAt: nowIso() });
+  task.lastPerformed = date; task.lastPerformedBy = by; task.reminderLog = ''; task.workStatus = '';
+  if (task.type === 'Issue') { task.state = 'Resolved'; task.resolution = clip(i.corrective || i.title, 2000); }
+  else if (isTrue(task.recurring)) {
+    const base = CONFIG.RECUR_FROM === 'due' && task.dueDate ? task.dueDate : date;
+    task.dueDate = addInterval(base, task.intervalValue, task.intervalUnit);
+  } else task.state = 'Completed';
+  update('Tasks', task._row, task);
+  audit(by, 'complete', task.id, 'Signed off by ' + i.sign.name + ' on contractor ' + row.number + ' (' + companyName(row.userId) + ')', row.vesselId);
+}
+
+/** The Captain answers a work order or item request. Returns true when it handled it. */
+function decideWoRequest(c, user, x, d) {
+  if (!WO_KINDS[x.kind]) return false;
+  const row = readTable('WorkOrders').find(w => w.id === x.woId);
+  if (!row) throw new Error('That work order was deleted');
+  const now = nowIso();
+  x.decidedBy = user.id; x.decidedAt = now; x.decisionNote = clip(d.note, 500); x.senderSeen = '';
+  const sender = readTable('Users').find(u => u.id === x.userId);
+  const items = parseList(row.items);
+  if (x.kind === 'woopen') {
+    x.status = d.approve ? 'approved' : 'declined';
+    row.boatStatus = x.status;
+    if (!d.approve) {
+      // nothing from this work order goes on the boat's record
+      readTable('WorkSubmissions').filter(k => k.woId === row.id && k.kind === 'woitem' && k.status === 'pending')
+        .forEach(k => { k.status = 'cancelled'; update('WorkSubmissions', k._row, k); });
+      items.forEach(i => { if (i.boat && i.boat.status === 'pending') i.boat.status = 'declined'; });
+      row.items = JSON.stringify(items);
+    }
+    update('WorkOrders', row._row, row);
+    audit(user.id, d.approve ? 'approveWorkOrder' : 'declineWorkOrder', '', row.number + ': ' + row.title + ' (' + companyName(row.userId) + ')', c.vessel.id);
+  } else {
+    const i = items.find(k => k.id === x.woItemId);
+    if (!i) throw new Error('That item was removed from the work order');
+    if (!d.approve) {
+      x.status = 'declined';
+      i.boat = { subId: x.id, status: 'declined', note: x.decisionNote };
+    } else {
+      let task;
+      if (d.taskId) {
+        task = taskIn(c, d.taskId);
+        if (task.state !== 'Open') throw new Error('That task is already ' + String(task.state).toLowerCase() + '. Choose another or add it as a new item.');
+      } else {
+        task = { id: newId('T'), title: clip(d.title || i.title, 200), description: clip(itemText(row, i), 2000), system: i.system || '', type: 'Issue',
+                 dueDate: d.dueDate || '', dueTime: '', recurring: 'FALSE', intervalValue: '', intervalUnit: '', assignedTo: '', state: 'Open',
+                 createdBy: user.id, createdAt: now, lastPerformed: '', lastPerformedBy: '', resolution: '', reminderLog: '', vesselId: c.vessel.id };
+        insert('Tasks', task);
+        audit(user.id, 'create', task.id, 'Contractor item from ' + row.number + ' (' + companyName(row.userId) + '), approved by ' + user.name, c.vessel.id);
+      }
+      x.status = 'approved'; x.taskId = task.id;
+      i.boat = { subId: x.id, status: 'approved', taskId: task.id };
+      if (i.sign) logItemOnBoat(row, i);
+    }
+    row.items = JSON.stringify(items);
+    update('WorkOrders', row._row, row);
+  }
+  update('WorkSubmissions', x._row, x);
+  if (sender && isTrue(sender.active)) {
+    const what = x.kind === 'woopen' ? 'work order ' + row.number + ': ' + row.title : 'item "' + x.title + '" on ' + row.number;
+    sendMail(sender.email, (d.approve ? 'Approved: ' : 'Not approved: ') + what,
+      '<p>' + esc(user.name) + (d.approve ? ' approved ' : ' did not approve ') + esc(what) + ' (' + esc(c.vessel.name) + ').</p>' +
+      (x.decisionNote ? '<p><i>' + esc(x.decisionNote) + '</i></p>' : '') + appLink());
+  }
+  return true;
+}
 function assignedTo(w, uid) { return parseList(w.items).some(i => i.assignedTo === uid); }
 function canSeeWo(t, w) {
   if (atLeast(t, 'supervisor')) return true;
@@ -5082,6 +5228,7 @@ function cleanItem(it, old, t, team, runs, no) {
   // A signed item is locked: it says who did the work. Take the signature back first to change it.
   if (old && old.sign && it.sign) return Object.assign({}, old);
   if (old && old.sign && !it.sign) {
+    if (old.boat && old.boat.logged) throw new Error('Item ' + old.no + ' is signed off on the boat\'s log. The signature cannot be taken back; add a new item to correct it.');
     const signer = old.sign.userId || '';
     if (signer && signer !== me && !atLeast(t, 'supervisor')) throw new Error('Only ' + old.sign.name + ' or a supervisor can take back the signature on item ' + old.no);
   }
@@ -5097,6 +5244,7 @@ function cleanItem(it, old, t, team, runs, no) {
       .filter(l => woNum(l.hours) > 0),
     parts: cleanParts(it.parts),
     assignedTo: who,
+    boat: old && old.boat ? old.boat : null,
     sign: null
   };
   if (!item.title) throw new Error('Item ' + no + ' needs a title');
@@ -5132,6 +5280,7 @@ function woSummary(items) {
 }
 
 function woView(w, subs, invs, vessels, t, team) {
+  const subsAll = subs;
   const sub = w.submissionId ? subs[w.submissionId] : null;
   let review = '';
   if (sub) review = sub.status === 'pending' && sub.tokenExpires && sub.tokenExpires < today() ? 'expired' : sub.status;
@@ -5148,7 +5297,9 @@ function woView(w, subs, invs, vessels, t, team) {
     invoice: inv && atLeast(t, 'supervisor') ? invoiceView(inv) : null,
     approvers: w.vesselId ? approversFor(w.vesselId, t).map(u => u.name) : [],
     match: runs && !w.vesselId && w.status === 'open' ? boatMatch(w.boatName, t) : null,
-    canRun: runs, mine: items.filter(i => i.assignedTo === t.user.id).length
+    canRun: runs, mine: items.filter(i => i.assignedTo === t.user.id).length,
+    perItem: !!w.boatSubId, boatStatus: w.boatStatus || '', boatNote: w.boatSubId && subsAll[w.boatSubId] ? subsAll[w.boatSubId].decisionNote || '' : '',
+    boatBy: w.boatSubId && subsAll[w.boatSubId] && subsAll[w.boatSubId].decidedBy ? userName(subsAll[w.boatSubId].decidedBy) : ''
   };
 }
 
@@ -5233,9 +5384,10 @@ function createWorkOrder(t, w) {
   const now = nowIso();
   const row = { id: newId('WO'), number: nextDocNumber('WorkOrders', t.ownerId, 'WO'), userId: t.ownerId, vesselId, boatName,
                 contactName, contactEmail, title, description: clip(w.description, 2000), items: '[]', notes: '[]', status: 'open',
-                submissionId: '', openedAt: now, editedAt: now, signedAt: '', createdBy: user.id, leadId, poNumber: cleanPo(w.poNumber) };
+                submissionId: '', openedAt: now, editedAt: now, signedAt: '', createdBy: user.id, leadId, poNumber: cleanPo(w.poNumber),
+                boatSeenAt: '', boatStatus: '', boatSubId: '' };
+  requestBoatApproval(t, row);
   insert('WorkOrders', row);
-  if (vesselId) mailWorkOrderOpened(t, row, readTable('Vessels').find(x => x.id === vesselId));
   audit(user.id, 'createWorkOrder', '', row.number + ': ' + title + ' (' + boatName + ')', vesselId);
   return oneWorkOrder(t, row);
 }
@@ -5271,7 +5423,11 @@ function saveWorkOrder(t, id, w) {
     }
     if (w.leadId !== undefined && atLeast(t, 'supervisor')) row.leadId = cleanLead(t, w.leadId);
   }
-  if (w.items !== undefined) row.items = JSON.stringify(cleanItems(w.items, parseList(row.items), t, runs));
+  if (row.vesselId && !row.boatSubId && row.status === 'open') requestBoatApproval(t, row);
+  if (w.items !== undefined) {
+    const prev = parseList(row.items);
+    row.items = JSON.stringify(syncItemApprovals(t, row, prev, cleanItems(w.items, prev, t, runs)));
+  }
   if (w.addNote && String(w.addNote).trim()) {
     const notes = parseList(row.notes);
     notes.push({ id: newId('N'), text: clip(w.addNote, 1000), at: nowIso(), by: user.name });
@@ -5311,18 +5467,43 @@ function linkWorkOrder(t, id, vesselId) {
   row.vesselId = v.id; row.boatName = v.name;
   if (caps.length && (!row.contactEmail || !caps.some(c => c.email === row.contactEmail))) { row.contactName = caps.map(c => c.name).join(', '); row.contactEmail = ''; }
   row.editedAt = nowIso();
+  if (requestBoatApproval(t, row)) row.items = JSON.stringify(syncItemApprovals(t, row, [], parseList(row.items)));
   update('WorkOrders', row._row, row);
   const inv = readTable('Invoices').find(i => i.woId === row.id);
   if (inv) { inv.vesselId = v.id; inv.boatName = v.name; update('Invoices', inv._row, inv); }
-  mailWorkOrderOpened(t, row, v);
   audit(t.user.id, 'linkWorkOrder', '', row.number + ' → ' + v.name, v.id);
   return Object.assign(oneWorkOrder(t, row), { message: row.number + ' is now on ' + v.name + '. It goes to ' + (caps.map(c => c.name).join(', ') || 'its Captain') + ' in the app when you send it.' });
 }
 
 /** Signs off the whole work order and sends it to the Captain or Owner, in the app or by email. */
+/** A work order on a CJM boat is closed by the contractor once every item is signed: the items were approved one by one. */
+function closeBoatWorkOrder(t, row) {
+  if (row.status !== 'open') throw new Error('This work order is already closed');
+  const items = parseList(row.items);
+  if (!items.length) throw new Error('Add at least one item before closing the work order');
+  const unsigned = items.filter(i => !i.sign);
+  if (unsigned.length) throw new Error('Sign every item before closing. Not signed yet: item ' + unsigned.map(i => i.no).join(', '));
+  const now = nowIso();
+  row.status = 'approved'; row.signedAt = now; row.editedAt = now;
+  update('WorkOrders', row._row, row);
+  const logged = items.filter(i => i.boat && i.boat.status === 'approved').length;
+  const waiting = items.filter(i => i.boat && i.boat.status === 'pending').length;
+  const caps = approversFor(row.vesselId, t);
+  if (caps.length) {
+    sendMail(caps.map(c => c.email).join(','), 'Work order finished on ' + row.boatName + ': ' + row.title,
+      '<p><b>' + esc(t.companyName) + '</b> finished ' + esc(row.number + ': ' + row.title) + ' on <b>' + esc(row.boatName) + '</b>.</p>' +
+      '<p>' + logged + ' item' + (logged === 1 ? ' is' : 's are') + ' signed off on the boat\'s log.' +
+      (waiting ? ' ' + waiting + ' item' + (waiting === 1 ? ' is' : 's are') + ' still waiting for your approval in Reviews.' : '') + '</p>' + appLink());
+  }
+  audit(t.user.id, 'closeWorkOrder', '', row.number + ': ' + row.title, row.vesselId);
+  return Object.assign(oneWorkOrder(t, row), { message: row.number + ' closed. ' + logged + ' item' + (logged === 1 ? ' is' : 's are') + ' on ' + row.boatName + '\'s log' +
+    (waiting ? ', ' + waiting + ' still waiting for the Captain\'s approval.' : '.') });
+}
+
 function submitWorkOrder(t, id, o) {
   const user = t.user;
   const row = runWorkOrder(t, id, 'send it to the Captain');
+  if (row.boatSubId) return closeBoatWorkOrder(t, row);
   if (row.status !== 'open') throw new Error('This work order was already sent');
   const items = parseList(row.items);
   if (!items.length) throw new Error('Add at least one item first');

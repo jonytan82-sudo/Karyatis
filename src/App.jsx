@@ -251,6 +251,7 @@ export default function App() {
       {(s.approvalsWaiting || []).filter((a) => !(tab === 'reviews' && !home && vessel && vessel.id === a.vesselId)).map((a) => {
         const parts = [
           a.workOrders ? `${a.workOrders} contractor work order${a.workOrders === 1 ? '' : 's'}${a.from.length ? ` from ${a.from.join(', ')}` : ''}` : '',
+          a.woItems ? `${a.woItems} work order item${a.woItems === 1 ? '' : 's'}${!a.workOrders && a.from.length ? ` from ${a.from.join(', ')}` : ''}` : '',
           a.jobs ? `${a.jobs} crew job${a.jobs === 1 ? '' : 's'}` : '',
           a.reviews ? `${a.reviews} task review${a.reviews === 1 ? '' : 's'}` : '',
         ].filter(Boolean);

@@ -81,6 +81,12 @@ A new tab, **TeamMembers**, is created by itself, and WorkOrders gets three new 
   - Technician: sees only work orders with items given to them, signs their own items, can write up new items. No rates or invoices.
   - When the Captain scores a work order, each person who signed items gets the score on their own record.
   - Someone on several teams (or with their own business too) picks who they are working for at the top of Work orders.
+- **Work orders on a CJM boat are approved as they go.** When a contractor opens a work order on a boat that is on CJM Marine,
+  its Captain and Owner approve the work order, then each item as it is added (Reviews > Waiting for your approval).
+  An approved item goes on the boat's log as an open item, or is tied to one of the boat's open tasks; when the contractor
+  signs it, it is signed off on the log, credited to whoever signed it. Declined items never go on the record. The contractor
+  closes the work order once every item is signed. Work orders for boats not on CJM Marine keep the emailed review at the end.
+  WorkOrders gets boatStatus and boatSubId columns and WorkSubmissions gets woItemId, all added by themselves.
 - **PO number** on the work order. It goes on the invoice and in the emails to the Captain. Changing it updates a draft invoice.
 - **Find the part** on New task and in a task's Purchase supplies: search Amazon (through the CJM link when the tag is on), paste the product link back,
   and the item name is filled in from the link. Short links (amzn.to) have no name in them. Part numbers and quantities are typed.

@@ -58,7 +58,50 @@ function Every({ f, setF }) {
 }
 
 /** A suggestion, unlisted work or a job by someone not on the crew, waiting for the Captain or Owner. */
+/** A contractor's new work order, or one of its items, on this boat. */
+function WoApproval({ a, onDecide, busy, openTasks = [] }) {
+  const item = a.kind === 'woitem';
+  const [note, setNote] = useState('');
+  const [taskId, setTaskId] = useState('');
+  return (
+    <li className="wr card approval">
+      <div className="wr-head">
+        <div>
+          <b>{a.company || a.crewName}</b> <small className="muted">{a.company && a.crewName !== a.company ? a.crewName : 'Contractor'}</small>
+          <span className="wr-task">{a.title}{a.system && <small>, {a.system}</small>}</span>
+        </div>
+        <span className={`kind kind-${a.kind}`}>{a.kindLabel}</span>
+      </div>
+      <small className="muted">Sent {fmtStamp(a.createdAt)}</small>
+      {a.description && <p className="wr-notes pre">{a.description}</p>}
+      <p className="hint">{item
+        ? 'Approve to put this item on the boat’s record as an open item. When the contractor signs it, it is signed off on the log, credited to whoever signed it.'
+        : 'Approve to accept this contractor work on the boat. Each item they add comes to you to approve before it goes on the boat’s record.'}</p>
+      {item && (
+        <label className="wr-attach">Put it on the log as
+          <select value={taskId} onChange={(e) => setTaskId(e.target.value)}>
+            <option value="">A new open item</option>
+            {openTasks.length > 0 && (
+              <optgroup label="One of your open tasks (signed off when they sign this item)">
+                {openTasks.map((t) => <option key={t.id} value={t.id}>{t.title}{t.dueDate ? `, due ${fmtDate(t.dueDate)}` : t.type === 'Issue' ? ' (issue)' : ''}</option>)}
+              </optgroup>
+            )}
+          </select>
+        </label>
+      )}
+      <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note to them (optional)" aria-label="Note" />
+      <div className="actions left">
+        <button className="btn primary" disabled={busy} onClick={() => onDecide(a.id, { approve: true, note, taskId: taskId || undefined })}>
+          {item ? (taskId ? 'Approve, tie to that task' : 'Approve onto the log') : 'Approve work order'}
+        </button>
+        <button className="btn" disabled={busy} onClick={() => onDecide(a.id, { approve: false, note })}>Decline</button>
+      </div>
+    </li>
+  );
+}
+
 function Approval({ a, onDecide, busy, openTasks = [] }) {
+  if (a.kind === 'woopen' || a.kind === 'woitem') return <WoApproval a={a} onDecide={onDecide} busy={busy} openTasks={openTasks} />;
   const suggest = a.kind === 'suggest';
   const [f, setF] = useState({ dueDate: a.dueDate || inDays(7), recurring: suggest && a.recurring, intervalValue: a.intervalValue || '',
     intervalUnit: a.intervalUnit || 'months', assignToThem: a.onCrew, score: 0, text: '', note: '', taskId: '' });
@@ -147,7 +190,7 @@ export default function WorkReviews({ vessel, onChanged }) {
       {error && <div className="alert">{error}</div>}
       <section className="group">
         <h3>Waiting for your approval <span className="count">{ap.pending.length}</span></h3>
-        <p className="hint">Tasks crew suggest, work they did that was not in the list, and contractor work orders. Nothing is added to the vessel's log until you approve it. A job can become a new entry or sign off one of your open tasks.</p>
+        <p className="hint">Tasks crew suggest, work they did that was not in the list, and contractor work orders and their items. Nothing is added to the vessel's log until you approve it.</p>
         {!ap.pending.length && <p className="empty">Nothing waiting.</p>}
         <ul className="wr-list">
           {ap.pending.map((a) => (
@@ -158,7 +201,7 @@ export default function WorkReviews({ vessel, onChanged }) {
       {wip.length > 0 && (
         <section className="group">
           <h3>Contractor work in progress <span className="count">{wip.length}</span></h3>
-          <p className="hint">Work orders contractors opened on this boat. Follow the work here. When they finish and send it, it moves to Waiting for your approval.</p>
+          <p className="hint">Work orders contractors opened on this boat. Follow the work here; new work orders and items wait for you under Waiting for your approval.</p>
           <ul className="wr-list">
             {wip.map((w) => (
               <li key={w.id} className={`wip${w.seen ? '' : ' new'}`}>
@@ -176,7 +219,7 @@ export default function WorkReviews({ vessel, onChanged }) {
                       {w.items.map((i) => (
                         <li key={i.no}>
                           <b>{i.title}</b>{' '}
-                          <span className="muted">{i.signedBy ? `Signed by ${i.signedBy}` : i.status === 'parts' ? 'Waiting on parts' : i.status === 'active' ? 'In work' : 'Not started'}{!i.signedBy && i.assignedName ? `, ${i.assignedName}` : ''}</span>
+                          <span className="muted">{i.signedBy ? `Signed by ${i.signedBy}` : i.status === 'parts' ? 'Waiting on parts' : i.status === 'active' ? 'In work' : 'Not started'}{!i.signedBy && i.assignedName ? `, ${i.assignedName}` : ''}{i.boat === 'pending' ? '. Waiting for your approval' : i.boat === 'declined' ? '. You did not approve it' : i.boat === 'approved' ? '. On the log' : ''}</span>
                         </li>
                       ))}
                     </ol>
